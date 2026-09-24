@@ -48,6 +48,52 @@ export async function prepareWindowsAsarUnpack(context, sourceRoot) {
 }
 
 /**
+ * Longest `--program-directory` the pinned LibreOfficeKit native helper accepts on Windows.
+ *
+ * Measured against one byte-identical `libreoffice-kit-win32-x64` copy reached through junctions of
+ * increasing length: 199 characters convert a DOCX and 200 fail. Above the budget the helper keeps
+ * running but cannot stat its own registry, and the failure surfaces as
+ * `Unknown LibreOfficeKit exception` at conversion time instead of a missing-file error.
+ *
+ * This is a characterised limit of the engine build pinned in dsh-v0.1.7-rc.1
+ * (`@deepseek-ai/libreoffice-kit@0.1.0` with `@deepseek-ai/libreoffice-kit-win32-x64@0.1.0`), not an
+ * upstream API guarantee: re-measure it whenever those packages are upgraded.
+ */
+export const WINDOWS_OFFICE_PROGRAM_DIRECTORY_BUDGET = 199
+
+/**
+ * Resolve the engine directory the assembled application passes as `--program-directory`.
+ * @param {string} resourcesDir Assembled application resources directory.
+ * @param {string} platform Engine platform of the packaged payload.
+ * @param {string} arch Engine architecture of the packaged payload.
+ * @returns {string} Absolute engine program directory inside the assembled application.
+ */
+export function windowsOfficeProgramDirectory(resourcesDir, platform, arch) {
+  return join(resourcesDir, 'app.asar.unpacked', 'dsh', 'node_modules', '@deepseek-ai',
+    `libreoffice-kit-${platform}-${arch}`, 'program', 'program')
+}
+
+/**
+ * Reject an assembled Windows application whose Office engine path exceeds the measured budget.
+ *
+ * Checking while packaging keeps an overlong checkout a build error instead of the runtime
+ * `Unknown LibreOfficeKit exception` it would otherwise cause.
+ * @param {string} resourcesDir Assembled application resources directory.
+ * @param {string} platform Engine platform of the packaged payload.
+ * @param {string} arch Engine architecture of the packaged payload.
+ * @returns {string} Verified engine program directory.
+ */
+export function verifyWindowsOfficeEnginePathBudget(resourcesDir, platform, arch) {
+  const programDirectory = windowsOfficeProgramDirectory(resourcesDir, platform, arch)
+  if (programDirectory.length > WINDOWS_OFFICE_PROGRAM_DIRECTORY_BUDGET) {
+    throw new Error(`Windows Office engine: --program-directory is ${programDirectory.length} characters,`
+      + ` beyond the ${WINDOWS_OFFICE_PROGRAM_DIRECTORY_BUDGET}-character budget of the pinned`
+      + ` LibreOfficeKit engine: ${programDirectory}`)
+  }
+  return programDirectory
+}
+
+/**
  * Reject inline, absent, linked, or changed PE files in the assembled application.
  * @param {string} sourceRoot Original signed and sealed dsh directory.
  * @param {string} resourcesDir Assembled application resources directory.

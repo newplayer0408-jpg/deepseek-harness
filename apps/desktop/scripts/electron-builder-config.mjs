@@ -26,7 +26,7 @@ import { resolveDesktopPolicyEnvironment } from './desktop-policy-environment.mj
 import { desktopTargetBuildPaths, resolveDesktopBuildTarget } from './desktop-build-paths.mjs'
 import { installWindowsDirectoryInstaller } from './windows-directory-installer.mjs'
 import { preserveWindowsRuntimeSignature, signWindowsCode } from './windows-runtime-signature.mjs'
-import { prepareWindowsAsarUnpack, verifyWindowsAsarUnpack } from './windows-asar-unpack.mjs'
+import { prepareWindowsAsarUnpack, verifyWindowsAsarUnpack, verifyWindowsOfficeEnginePathBudget } from './windows-asar-unpack.mjs'
 import { recordPackagingEvent } from './packaging-run.mjs'
 import {
   resolveMacOSAppUpdateFeed,
@@ -189,7 +189,12 @@ export function createElectronBuilderConfig(
       await verifyDesktopRuntime(buildPaths.dsh,
         preparedRuntimeVersion ?? productVersion, { platform: resolvedPlatform, arch: resolvedArch })
       // Unsigned Windows builds skip electron-builder's afterSign hook.
-      if (packagesWindows && unsigned) await verifyWindowsAsarUnpack(buildPaths.dsh, resourcesDir, windowsCode)
+      if (packagesWindows && unsigned) {
+        // Unsigned Windows assembles into the shallow root `desktopTargetBuildPaths` selects, so the
+        // Office engine path budget is asserted here on the very application the runtime smoke launches.
+        verifyWindowsOfficeEnginePathBudget(resourcesDir, resolvedPlatform, resolvedArch)
+        await verifyWindowsAsarUnpack(buildPaths.dsh, resourcesDir, windowsCode)
+      }
     },
     afterSign: async context => {
       if (windowsSigner !== undefined) {

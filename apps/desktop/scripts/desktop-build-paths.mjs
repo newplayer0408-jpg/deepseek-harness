@@ -3,8 +3,22 @@
 import { join, resolve } from 'node:path'
 
 const APP_ROOT = resolve(import.meta.dirname, '..')
+const REPOSITORY_ROOT = resolve(APP_ROOT, '..', '..')
 const BUILD_ROOT = join(APP_ROOT, '.desktop-build')
 const SUPPORTED_TARGETS = new Set(['mac-arm64', 'mac-x64', 'win-x64'])
+
+/**
+ * Repository-root directory that holds the assembled unsigned Windows application.
+ *
+ * electron-builder appends `win-unpacked/resources/app.asar.unpacked/dsh/node_modules/
+ * @deepseek-ai/libreoffice-kit-<platform>-<arch>/program/program` to `directories.output`. The pinned
+ * LibreOfficeKit native helper loads its registry through a fixed path buffer and fails above the
+ * `--program-directory` budget that `verifyWindowsOfficeEnginePathBudget` enforces, so the assembled
+ * application cannot live under `targets/win-x64/`: that nesting leaves a checkout no headroom.
+ * `.dsh-build` is already the repository build-output root, so the existing ignore and cleanup rules
+ * cover this output without another rule to keep in sync.
+ */
+const WINDOWS_UNSIGNED_ARTIFACTS_ROOT = join(REPOSITORY_ROOT, '.dsh-build')
 
 /**
  * Resolve the fixed build target selected by a packaging environment.
@@ -37,6 +51,10 @@ function assertSupportedTarget(target) {
 
 /**
  * Return the mutable preparation and artifact directories owned by one release target.
+ *
+ * Unsigned Windows output is the one path that does not sit under `targets/<target>/`, because the
+ * assembled LibreOfficeKit engine has to stay within the Windows path budget; it remains isolated
+ * by target, and unsigned packaging is Windows-only.
  * @param {'mac-arm64' | 'mac-x64' | 'win-x64'} target - Supported Desktop target name.
  * @returns {{ root: string, artifacts: string, unsignedArtifacts: string, runtime: string, packageSet: string, dsh: string, dshPnpm: string, electron: string, packedDsh: string, packedVendor: string, packedLandlock: string, downloads: string }} Target paths plus the shared immutable download cache.
  */
@@ -47,7 +65,9 @@ export function desktopTargetBuildPaths(target) {
   return {
     root,
     artifacts: join(root, 'artifacts'),
-    unsignedArtifacts: join(root, 'unsigned-artifacts'),
+    unsignedArtifacts: target === 'win-x64'
+      ? join(WINDOWS_UNSIGNED_ARTIFACTS_ROOT, target)
+      : join(root, 'unsigned-artifacts'),
     runtime: join(root, 'runtime'),
     packageSet: join(root, 'package-set'),
     dsh: join(root, 'dsh'),

@@ -1,14 +1,20 @@
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, sep } from 'node:path'
 import type { Stats } from 'node:fs'
 import { Arch, Packager, type BeforePackContext, type Configuration } from 'app-builder-lib'
 import { WinPackager } from 'app-builder-lib/out/winPackager.js'
 import { getFileMatchers } from 'app-builder-lib/out/fileMatcher.js'
 import { readAsar } from 'app-builder-lib/out/asar/asar.js'
 import { afterEach, expect, it, vi } from 'vitest'
-import { prepareWindowsAsarUnpack, verifyWindowsAsarUnpack } from '../scripts/windows-asar-unpack.mjs'
+import {
+  WINDOWS_OFFICE_PROGRAM_DIRECTORY_BUDGET,
+  prepareWindowsAsarUnpack,
+  verifyWindowsAsarUnpack,
+  verifyWindowsOfficeEnginePathBudget,
+  windowsOfficeProgramDirectory,
+} from '../scripts/windows-asar-unpack.mjs'
 import { createElectronBuilderConfig } from '../scripts/electron-builder-config.mjs'
 import { verifyRuntimeArchive } from '../scripts/verify-runtime-archive.ts'
 import { DESKTOP_HOST_PROTOCOL_VERSION } from '../src/host-protocol.ts'
@@ -252,6 +258,29 @@ it.each([false, true])('keeps the complete Office engine outside ASAR with exter
     expect(archive.getFile(join('dsh', engine, file), false).unpacked).toBe(true)
     expect(await readFile(join(input.resources, 'app.asar.unpacked', 'dsh', engine, file), 'utf8')).toBe('{}')
   }
+})
+
+// Length the engine nesting adds below the assembled resources directory, separator included and
+// derived from this host so the boundary below is exercised on every platform.
+const OFFICE_ENGINE_APPENDED_LENGTH =
+  windowsOfficeProgramDirectory('C:', 'win32', 'x64').length - 'C:'.length
+
+function syntheticWindowsRoot(length: number): string {
+  return `C:${sep}${'p'.repeat(length - 3)}`
+}
+
+it('locates the Office engine program directory inside the assembled application', () => {
+  const resources = join('C:', 'output', 'resources')
+  expect(windowsOfficeProgramDirectory(resources, 'win32', 'x64')).toBe(join(resources,
+    'app.asar.unpacked', 'dsh', 'node_modules', '@deepseek-ai', 'libreoffice-kit-win32-x64', 'program', 'program'))
+})
+
+it('accepts the measured Office program-directory budget and rejects one character more', () => {
+  const atBudget = syntheticWindowsRoot(WINDOWS_OFFICE_PROGRAM_DIRECTORY_BUDGET - OFFICE_ENGINE_APPENDED_LENGTH)
+  expect(verifyWindowsOfficeEnginePathBudget(atBudget, 'win32', 'x64')).toHaveLength(WINDOWS_OFFICE_PROGRAM_DIRECTORY_BUDGET)
+  const overBudget = syntheticWindowsRoot(WINDOWS_OFFICE_PROGRAM_DIRECTORY_BUDGET - OFFICE_ENGINE_APPENDED_LENGTH + 1)
+  expect(() => verifyWindowsOfficeEnginePathBudget(overBudget, 'win32', 'x64'))
+    .toThrow(`beyond the ${WINDOWS_OFFICE_PROGRAM_DIRECTORY_BUDGET}-character budget`)
 })
 
 async function seal(input: Awaited<ReturnType<typeof fixture>>): Promise<DesktopRuntimeDescriptor> {

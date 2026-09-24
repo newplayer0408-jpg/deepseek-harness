@@ -1,4 +1,5 @@
-import { join, sep } from 'node:path'
+import { join, relative, resolve, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
   desktopTargetBuildPaths,
@@ -6,6 +7,8 @@ import {
   developmentRuntimeDirectory,
   resolveDesktopBuildTarget,
 } from '../scripts/desktop-build-paths.mjs'
+
+const REPOSITORY_ROOT = resolve(fileURLToPath(new URL('../../..', import.meta.url)))
 
 describe('desktop build paths', () => {
   it('isolates every mutable build directory by complete target', () => {
@@ -32,6 +35,15 @@ describe('desktop build paths', () => {
     expect(arm64.artifacts).toContain(join('targets', 'mac-arm64', 'artifacts'))
     expect(x64.dsh).toContain(join('targets', 'mac-x64', 'dsh'))
     expect(windows.runtime).toContain(join('targets', 'win-x64', 'runtime'))
+  })
+
+  it('assembles the Windows unsigned application at the repository build root', () => {
+    // electron-builder appends win-unpacked/resources/app.asar.unpacked/dsh/node_modules/
+    // @deepseek-ai/libreoffice-kit-win32-x64/program/program to this root. Keeping it at the build
+    // root, rather than under targets/win-x64/, is what leaves the checkout enough headroom for the
+    // pinned engine's --program-directory budget that verifyWindowsOfficeEnginePathBudget enforces.
+    const windows = desktopTargetBuildPaths('win-x64')
+    expect(relative(REPOSITORY_ROOT, windows.unsignedArtifacts)).toBe(join('.dsh-build', 'win-x64'))
   })
 
   it('shares only the immutable upstream download cache', () => {

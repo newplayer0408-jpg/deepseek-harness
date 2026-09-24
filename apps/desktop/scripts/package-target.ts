@@ -324,7 +324,7 @@ async function resolveRequestedBuildVersion(
   const paths = desktopTargetBuildPaths(invocation.target.name)
   return suggestDesktopBuildVersion({
     productVersion, target: invocation.target.name, environment,
-    // Unsigned builds land beside the signed output, so numbering has to read the directory this run writes.
+    // Unsigned builds land outside the target's signed output root, so numbering has to read the directory this run writes.
     artifactsRoot: invocation.unsigned ? paths.unsignedArtifacts : paths.artifacts,
   })
 }
