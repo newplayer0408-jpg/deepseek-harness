@@ -1,11 +1,17 @@
 import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join, resolve, sep } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  DEFAULT_DSH_COMMUNITY_HOME_DISPLAY,
+  DEFAULT_DSH_DEV_HOME_DISPLAY,
   DEFAULT_DSH_HOME_DISPLAY,
+  DSH_COMMUNITY_HOME_DIR_NAME,
+  DSH_DEV_HOME_DIR_NAME,
   DSH_HOME_DIR_NAME,
   canonicalizeWatchPath,
+  defaultDshCommunityHome,
+  defaultDshDevHome,
   defaultDshHome,
   dshCachePath,
   dshHomeDisplay,
@@ -23,6 +29,28 @@ describe('dsh path helpers', () => {
     expect(DSH_HOME_DIR_NAME).toBe('.dsh')
     expect(DEFAULT_DSH_HOME_DISPLAY).toBe('~/.dsh')
     expect(defaultDshHome()).toBe(join(homedir(), '.dsh'))
+  })
+
+  it('separates the development home from the release home', () => {
+    expect(DSH_DEV_HOME_DIR_NAME).toBe('.dsh-dev')
+    expect(DEFAULT_DSH_DEV_HOME_DISPLAY).toBe('~/.dsh-dev')
+    expect(defaultDshDevHome()).toBe(join(homedir(), '.dsh-dev'))
+    // A sibling, never a child: a release home must not own development data.
+    expect(defaultDshDevHome().startsWith(`${defaultDshHome()}${sep}`)).toBe(false)
+    expect(defaultDshDevHome()).not.toBe(defaultDshHome())
+  })
+
+  it('separates the community home from both the release and development homes', () => {
+    expect(DSH_COMMUNITY_HOME_DIR_NAME).toBe('.dsh-community')
+    expect(DEFAULT_DSH_COMMUNITY_HOME_DISPLAY).toBe('~/.dsh-community')
+    expect(defaultDshCommunityHome()).toBe(join(homedir(), '.dsh-community'))
+    // Three sibling roots, so no variant's home is reachable by walking into another's.
+    expect(defaultDshCommunityHome()).not.toBe(defaultDshHome())
+    expect(defaultDshCommunityHome()).not.toBe(defaultDshDevHome())
+    for (const other of [defaultDshHome(), defaultDshDevHome()]) {
+      expect(defaultDshCommunityHome().startsWith(`${other}${sep}`)).toBe(false)
+      expect(other.startsWith(`${defaultDshCommunityHome()}${sep}`)).toBe(false)
+    }
   })
 
   it('expands tilde paths without changing non-tilde paths', () => {
@@ -54,6 +82,8 @@ describe('dsh path helpers', () => {
 
   it('labels a resolved home by whether it is the default root', () => {
     expect(dshHomeDisplay(resolve(defaultDshHome()))).toBe('~/.dsh')
+    expect(dshHomeDisplay(resolve(defaultDshDevHome()))).toBe('~/.dsh-dev')
+    expect(dshHomeDisplay(resolve(defaultDshCommunityHome()))).toBe('~/.dsh-community')
     expect(dshHomeDisplay('/some/other/root')).toBe('$DSH_HOME')
   })
 

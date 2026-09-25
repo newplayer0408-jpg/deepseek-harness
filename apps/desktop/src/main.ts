@@ -22,6 +22,7 @@ import {
   type MenuItemConstructorOptions,
 } from 'electron'
 import { resolveDesktopPaths } from './paths.ts'
+import { bootstrapDesktopVariant } from './desktop-variant.ts'
 import { DesktopProjectManager } from './project-manager.ts'
 import { DesktopHostFatalError, DesktopHostProcess, DesktopHostUncleanExitError } from './host-process.ts'
 import { DesktopPlatformView, PLATFORM_IPC, platformBounds } from './platform-view.ts'
@@ -308,6 +309,10 @@ function createWindow(preload: string, show = false, primary = false): BrowserWi
 }
 
 async function main(): Promise<void> {
+  // Before anything resolves a Harness path: an isolated variant must not read or write the state a
+  // release installation owns, and only a declared variant gets an isolated home. The same bootstrap
+  // seeds the telemetry default a community build carries into the Host child process it starts.
+  await bootstrapDesktopVariant({ appPath: app.getAppPath() })
   void pruneCrashReports(app.getPath('logs'))
   const journalDirectory = process.env.DSH_DESKTOP_UPDATE_JOURNAL_DIR
   const updateJournal = journalDirectory === undefined ? undefined : new DesktopUpdateJournal(journalDirectory, app.getVersion())

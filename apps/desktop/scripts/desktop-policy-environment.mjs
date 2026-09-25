@@ -1,4 +1,5 @@
 /** Resolve the required policy service from the same deployment as updater publication. */
+import { DESKTOP_COMMUNITY_VARIANT } from './desktop-release-environment.mjs'
 import { resolveDesktopAutoUpdateEnvironment } from './desktop-auto-update-environment.mjs'
 
 function origin(value, name) {
@@ -13,9 +14,16 @@ function origin(value, name) {
 /**
  * Resolve mandatory policy metadata before preparing artifacts or accessing signing hardware.
  * @param {NodeJS.ProcessEnv} environment File-owned release settings; the unselected origin is not required.
- * @returns {{ origin: string, allowedPageOrigins: string[], authentication: 'anonymous' | 'feishu-test', [key: string]: unknown }} Selected policy.
+ * @param {string} variant Product variant resolved by `resolveDesktopVariant`.
+ * @returns {{ origin: string, allowedPageOrigins: string[], authentication: 'anonymous' | 'feishu-test', [key: string]: unknown } | undefined} Selected policy, or undefined for a variant with no policy service.
  */
-export function resolveDesktopPolicyEnvironment(environment) {
+export function resolveDesktopPolicyEnvironment(environment, variant) {
+  // A community build is not a DeepSeek deployment, so it has no policy service to ask. Returning
+  // nothing is what disables the behaviour end to end: no origin is required here, the packaged
+  // manifest carries no policy field, and the shell therefore builds no policy client and polls
+  // nothing. Pointing the field at a placeholder or an unreachable host would keep a request path
+  // alive that exists only to fail.
+  if (variant === DESKTOP_COMMUNITY_VARIANT) return undefined
   const deployment = resolveDesktopAutoUpdateEnvironment(environment)
   const name = deployment === 'test' ? 'DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN' : 'DSH_DESKTOP_MANDATORY_UPDATE_PROD_ORIGIN'
   const selected = origin(environment[name], name)

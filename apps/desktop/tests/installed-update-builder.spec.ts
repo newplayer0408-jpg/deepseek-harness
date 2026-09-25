@@ -113,6 +113,8 @@ describe('installed-update application inputs and builder configuration', () => 
   it.each([
     { DSH_DESKTOP_AUTO_UPDATE_ENV: 'production' },
     { DSH_DESKTOP_UNSIGNED: '1' },
+    // A development build is not a release of this product, so it may not publish to the release feed.
+    { DSH_DESKTOP_VARIANT: 'dev' },
     { DOWNLOAD_TEST_ORIGIN: 'https://download.deepseek.com' },
   ])('rejects incompatible qualification settings %j', async (override) => {
     await fixture(async (manifest) => {

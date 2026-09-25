@@ -1,10 +1,29 @@
 /** Resolve build-owned Desktop paths without sharing mutable state across release targets. */
 
 import { join, resolve } from 'node:path'
+import { DESKTOP_PRODUCTION_VARIANT, desktopVariantSuffix, resolveDesktopVariant } from './desktop-release-environment.mjs'
 
 const APP_ROOT = resolve(import.meta.dirname, '..')
+const REPOSITORY_ROOT = resolve(APP_ROOT, '..', '..')
 const BUILD_ROOT = join(APP_ROOT, '.desktop-build')
 const SUPPORTED_TARGETS = new Set(['mac-arm64', 'mac-x64', 'win-x64'])
+
+/**
+ * Repository-root directory that holds the assembled Windows application.
+ *
+ * electron-builder appends `win-unpacked/resources/app.asar.unpacked/dsh/node_modules/
+ * @deepseek-ai/libreoffice-kit-<platform>-<arch>/program/program` to `directories.output`. The pinned
+ * LibreOfficeKit native helper loads its registry through a fixed path buffer and fails above the
+ * `--program-directory` budget that `verifyWindowsOfficeEnginePathBudget` enforces, so the assembled
+ * application cannot live under `targets/win-x64/`: that nesting leaves a checkout no headroom.
+ * `.dsh-build` is already the repository build-output root, so the existing ignore and cleanup rules
+ * cover this output without another rule to keep in sync.
+ *
+ * Each Windows variant gets its own directory directly below this root, which is what keeps an
+ * isolated variant's assembled application as shallow as a release's and keeps two variants from
+ * overwriting each other's installers.
+ */
+const WINDOWS_ARTIFACTS_ROOT = join(REPOSITORY_ROOT, '.dsh-build')
 
 /**
  * Resolve the fixed build target selected by a packaging environment.
@@ -36,18 +55,34 @@ function assertSupportedTarget(target) {
 }
 
 /**
- * Return the mutable preparation and artifact directories owned by one release target.
+ * Return the mutable preparation and artifact directories owned by one release target and variant.
+ *
+ * Unsigned Windows output is the one path that does not sit under `targets/<target>/`, because the
+ * assembled LibreOfficeKit engine has to stay within the Windows path budget; it remains isolated
+ * by target and variant, and unsigned packaging is Windows-only.
+ *
+ * An isolated variant (anything but a release) is only reachable on Windows
+ * (`electron-builder-config.mjs` refuses it elsewhere), and it owns one shallow root of its own for
+ * both signing statuses. That keeps an isolated variant's installer from overwriting a release
+ * installer or an assembled application, keeps its own application inside the same Office path
+ * budget, and lets two isolated variants of one version assemble side by side. The preparation trees
+ * stay shared, because nothing in them depends on the product identity.
  * @param {'mac-arm64' | 'mac-x64' | 'win-x64'} target - Supported Desktop target name.
+ * @param {'production' | 'dev' | 'community'} [variant] - Product variant; production when a build does not select one.
  * @returns {{ root: string, artifacts: string, unsignedArtifacts: string, runtime: string, packageSet: string, dsh: string, dshPnpm: string, electron: string, packedDsh: string, packedVendor: string, packedLandlock: string, downloads: string }} Target paths plus the shared immutable download cache.
  */
-export function desktopTargetBuildPaths(target) {
+export function desktopTargetBuildPaths(target, variant = DESKTOP_PRODUCTION_VARIANT) {
   assertSupportedTarget(target)
   const root = join(BUILD_ROOT, 'targets', target)
   const packed = join(root, 'packed')
+  const signedArtifacts = join(root, 'artifacts')
+  const windows = target === 'win-x64'
+  const isolated = variant !== DESKTOP_PRODUCTION_VARIANT
+  const windowsArtifacts = join(WINDOWS_ARTIFACTS_ROOT, `${target}${desktopVariantSuffix(variant)}`)
   return {
     root,
-    artifacts: join(root, 'artifacts'),
-    unsignedArtifacts: join(root, 'unsigned-artifacts'),
+    artifacts: windows && isolated ? windowsArtifacts : signedArtifacts,
+    unsignedArtifacts: windows ? windowsArtifacts : join(root, 'unsigned-artifacts'),
     runtime: join(root, 'runtime'),
     packageSet: join(root, 'package-set'),
     dsh: join(root, 'dsh'),
@@ -86,7 +121,7 @@ export function resolveDesktopTargetBuildPaths(
   hostPlatform = process.platform,
   hostArch = process.arch,
 ) {
-  return desktopTargetBuildPaths(resolveDesktopBuildTarget(env, hostPlatform, hostArch))
+  return desktopTargetBuildPaths(resolveDesktopBuildTarget(env, hostPlatform, hostArch), resolveDesktopVariant(env))
 }
 
 /**

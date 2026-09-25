@@ -7,7 +7,14 @@ import { fileURLToPath } from 'node:url'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import {
+  DESKTOP_COMMUNITY_VARIANT,
+  DESKTOP_VARIANT_ENV,
+  DESKTOP_VARIANT_METADATA,
+  desktopVariantSuffix,
   resolveDesktopAppId,
+  resolveDesktopProductName,
+  resolveDesktopVariant,
+  resolveDesktopVariantIdentity,
   resolveMacOSNotarizationEnvironment,
   resolveMacOSSigningEnvironment,
 } from './desktop-release-environment.mjs'
@@ -26,13 +33,16 @@ import { resolveDesktopPolicyEnvironment } from './desktop-policy-environment.mj
 import { desktopTargetBuildPaths, resolveDesktopBuildTarget } from './desktop-build-paths.mjs'
 import { installWindowsDirectoryInstaller } from './windows-directory-installer.mjs'
 import { preserveWindowsRuntimeSignature, signWindowsCode } from './windows-runtime-signature.mjs'
-import { prepareWindowsAsarUnpack, verifyWindowsAsarUnpack } from './windows-asar-unpack.mjs'
+import { prepareWindowsAsarUnpack, verifyWindowsAsarUnpack, verifyWindowsOfficeEnginePathBudget } from './windows-asar-unpack.mjs'
 import { recordPackagingEvent } from './packaging-run.mjs'
 import {
   resolveMacOSAppUpdateFeed,
   verifyMacOSAppUpdateConfig,
   writeMacOSAppUpdateConfig,
 } from './macos-app-update-config.mjs'
+
+/** Repository root, which owns the license and notice files a community build carries. */
+const REPOSITORY_ROOT = fileURLToPath(new URL('../../..', import.meta.url))
 
 /**
  * Create electron-builder configuration from one release environment.
@@ -50,8 +60,7 @@ export function createElectronBuilderConfig(
   preparedRuntime = undefined,
   preparedRuntimeVersion = undefined,
 ) {
-  const appId = resolveDesktopAppId(env)
-  const policy = resolveDesktopPolicyEnvironment(env)
+  const variant = resolveDesktopVariant(env)
   const targetPlatform = env.DSH_DESKTOP_TARGET_PLATFORM
   const resolvedPlatform = targetPlatform ?? hostPlatform
   const resolvedArch = env.DSH_DESKTOP_TARGET_ARCH ?? hostArch
@@ -60,12 +69,29 @@ export function createElectronBuilderConfig(
   }
   const unsigned = env.DSH_DESKTOP_UNSIGNED === '1'
   if (unsigned && resolvedPlatform !== 'win32') throw new Error('desktop package: unsigned builds require Windows')
+  // Signing status and product variant are independent inputs, so the variant alone selects the
+  // installed identity: an isolated variant cannot share an install directory, an uninstall entry, a
+  // shortcut, or a state root with a release, while an unsigned release keeps the release identity.
+  // The release identifier is read only when no variant supplies an identity, which is what keeps a
+  // community build independent of — and unchangeable by — the fork's release settings.
+  const identity = resolveDesktopVariantIdentity(variant, env)
+  const appId = identity?.appId ?? resolveDesktopAppId(env)
+  const productName = resolveDesktopProductName(variant)
+  // An isolated variant is a Windows-local build. The Windows target is the one whose installer,
+  // shortcut ownership, uninstaller entry, and shallow output root the variant is defined against;
+  // every other target would produce an isolated application with no isolation behind it, so the
+  // combination fails here instead of half-way through a build.
+  if (identity !== undefined && resolvedPlatform !== 'win32') {
+    throw new Error(`desktop package: ${DESKTOP_VARIANT_ENV}=${variant} requires the win32 target`)
+  }
+  // A community build belongs to no DeepSeek deployment, so it resolves no policy at all.
+  const policy = resolveDesktopPolicyEnvironment(env, variant)
   const packagesMacOS = targetPlatform === 'darwin' || (targetPlatform === undefined && hostPlatform === 'darwin')
   const packagesWindows = resolvedPlatform === 'win32'
   if (resolvedPlatform === 'win32') installWindowsDirectoryInstaller()
   const macOSSigning = packagesMacOS ? resolveMacOSSigningEnvironment(env) : undefined
   if (packagesMacOS) resolveMacOSNotarizationEnvironment(env)
-  const buildPaths = desktopTargetBuildPaths(resolveDesktopBuildTarget(env, hostPlatform, hostArch))
+  const buildPaths = desktopTargetBuildPaths(resolveDesktopBuildTarget(env, hostPlatform, hostArch), variant)
   let primaryRuntimeDestination
   let dshDestination
   let windowsCode = []
@@ -99,16 +125,29 @@ export function createElectronBuilderConfig(
   const packaged = resolveDesktopBuildCommit(env)
   return {
     appId,
-    protocols: [{ name: 'DeepSeek Harness', schemes: ['dsh'] }],
+    // The registered scheme description is a display name, so it follows the variant for the same
+    // reason the product name does. A release resolves to the name it always registered.
+    protocols: [{ name: productName, schemes: ['dsh'] }],
     extraMetadata: {
       dshDesktopAppId: appId,
-      dshMandatoryUpdatePolicy: policy,
+      // The shell builds its mandatory-update policy client only when this field is present, so
+      // omitting it is what leaves a community build with no policy service to poll.
+      ...policy === undefined ? {} : { dshMandatoryUpdatePolicy: policy },
+      // An isolated build also carries its own package name: Electron derives the user data
+      // directory, and therefore the Chromium profile and the single-instance lock, from that name,
+      // and the generated uninstaller removes the same directory. Deriving both from one value keeps
+      // them in step.
+      ...identity === undefined ? {} : { name: identity.packageName, [DESKTOP_VARIANT_METADATA]: identity.variant },
       ...buildVersion === productVersion ? {} : { version: buildVersion },
       ...packaged === undefined ? {} : { dshBuildCommit: packaged.commit, dshBuildDirty: packaged.dirty },
     },
-    productName: 'DeepSeek Harness',
-    // Unsigned builds carry their own suffix so a shared file can never pass for a release artifact.
-    artifactName: `deepseek-harness-\${version}-\${os}-\${arch}${unsigned ? '-unsigned' : ''}.\${ext}`,
+    productName,
+    // Variant and signing status each contribute a suffix, in a fixed order and independent of each
+    // other: a release keeps its published name, `-unsigned` records the signing status, and `-dev`
+    // marks a development build whatever that status is. This name is what keeps a development
+    // installer unmistakable outside the installed application, and it also keeps the two variants'
+    // installer and blockmap names from colliding.
+    artifactName: `deepseek-harness-\${version}-\${os}-\${arch}${desktopVariantSuffix(variant)}${unsigned ? '-unsigned' : ''}.\${ext}`,
     directories: { output: unsigned ? buildPaths.unsignedArtifacts : buildPaths.artifacts },
     asar: true,
     electronDist: buildPaths.electron,
@@ -147,6 +186,16 @@ export function createElectronBuilderConfig(
       // Windows tray bitmaps; macOS keeps the Dock and ships no menu bar icon.
       ...(packagesWindows ? [{ from: fileURLToPath(new URL('../resources/tray-windows.ico', import.meta.url)), to: 'tray.ico' }] : []),
     ],
+    // MIT requires the copyright and permission notice to accompany copies of the software, and a
+    // public community binary is a copy. The notices sit beside the executable, where electron-builder
+    // already places Electron's own, and only the community variant carries them — a release artifact's
+    // file set stays exactly as it was, and nothing already packaged is replaced.
+    extraFiles: variant === DESKTOP_COMMUNITY_VARIANT
+      ? [
+          { from: join(REPOSITORY_ROOT, 'LICENSE'), to: 'licenses/LICENSE' },
+          { from: join(REPOSITORY_ROOT, 'THIRD_PARTY_NOTICES.md'), to: 'licenses/THIRD_PARTY_NOTICES.md' },
+        ]
+      : [],
     mac: {
       icon: fileURLToPath(new URL('../resources/icon-macos.png', import.meta.url)),
       category: 'public.app-category.developer-tools',
@@ -191,7 +240,12 @@ export function createElectronBuilderConfig(
       await verifyDesktopRuntime(buildPaths.dsh,
         preparedRuntimeVersion ?? productVersion, { platform: resolvedPlatform, arch: resolvedArch })
       // Unsigned Windows builds skip electron-builder's afterSign hook.
-      if (packagesWindows && unsigned) await verifyWindowsAsarUnpack(buildPaths.dsh, resourcesDir, windowsCode)
+      if (packagesWindows && unsigned) {
+        // Unsigned Windows assembles into the shallow root `desktopTargetBuildPaths` selects, so the
+        // Office engine path budget is asserted here on the very application the runtime smoke launches.
+        verifyWindowsOfficeEnginePathBudget(resourcesDir, resolvedPlatform, resolvedArch)
+        await verifyWindowsAsarUnpack(buildPaths.dsh, resourcesDir, windowsCode)
+      }
     },
     afterSign: async context => {
       if (windowsSigner !== undefined) {

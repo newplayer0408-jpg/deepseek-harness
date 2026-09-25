@@ -1,0 +1,222 @@
+# Build the community Windows installer for this fork and, only when asked, publish it as a GitHub
+# Release.
+#
+# This workflow is the fork's own distribution lane. It never invokes the upstream publication path:
+# no upload, COS, or auto-update setting is configured, the packaging command is the repository's
+# existing unsigned Windows command, and the variant it builds is not publishable through
+# `createDesktopUploadPlan` or the installed-update qualification even if someone tried.
+#
+# The installer is unsigned. Signing status and product variant are independent inputs, so an
+# unsigned build keeps its variant's identity; the `community` variant is what separates this binary
+# from a DeepSeek release, and this workflow never selects any other variant.
+#
+# Manual only, with no tag trigger: a dispatch cannot create a public version tag, and the version
+# this build publishes comes from `apps/desktop/package.json` alone. The `publish` input is false by
+# default, so a first iteration exercises the build lane and nothing else.
+name: Release (desktop community)
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Create a GitHub Release from the built installer'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  # A release build is not worth cancelling halfway through, and a cancelled run must never be
+  # mistaken for a completed one.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PRIMARY_NODE_VERSION: '24'
+  # CI isolation for the build process. This describes this job, not the packaged application: no
+  # workflow variable reaches the application a user installs, which seeds its own telemetry mode
+  # from its declared variant.
+  DSH_TELEMETRY_DISABLED: '1'
+
+jobs:
+  build:
+    name: Build community installer (win-x64)
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          clean: true
+
+      # The bundled runtime's native modules are built here, and pnpm's store is linked rather than
+      # copied, which needs symlink support on the hosted runner.
+      - name: Enable Developer Mode (symlink support)
+        shell: pwsh
+        run: >-
+          reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock"
+          /t REG_DWORD /f /v "AllowDevelopmentWithoutDevLicense" /d "1"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          dest: ${{ runner.temp }}/setup-pnpm-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.PRIMARY_NODE_VERSION }}
+          package-manager-cache: false
+
+      - name: Configure pnpm store path
+        id: pnpm-store
+        # Native pwsh, like every Windows step here: `.github/AGENTS.md` keeps Windows jobs off the
+        # bash shim, whose path translation would otherwise rewrite the store path written below.
+        shell: pwsh
+        run: |
+          $storeRoot = Join-Path $HOME '.local/share/pnpm/store'
+          "PNPM_CONFIG_STORE_DIR=$storeRoot" >> $env:GITHUB_ENV
+          $env:PNPM_CONFIG_STORE_DIR = $storeRoot
+          $storePath = (pnpm store path --silent).Trim()
+          if ($LASTEXITCODE -ne 0) { throw "pnpm store path failed with exit code $LASTEXITCODE" }
+          "path=$storePath" >> $env:GITHUB_OUTPUT
+
+      - uses: actions/cache/restore@v4
+        if: runner.environment == 'github-hosted'
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: ${{ runner.os }}-node-${{ env.PRIMARY_NODE_VERSION }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-node-${{ env.PRIMARY_NODE_VERSION }}-pnpm-
+
+      - name: Install (immutable)
+        shell: pwsh
+        run: pnpm install --frozen-lockfile
+
+      # Release settings are file-owned: the packaging scripts read them from this file and strip them
+      # from the ambient environment, so the variant cannot be supplied any other way. The community
+      # variant pins its own application identifier and takes no policy origin, so the variant line is
+      # the file's whole content — nothing here can carry a DeepSeek identity, an update origin, or a
+      # credential into the build.
+      - name: Write the community packaging environment
+        shell: pwsh
+        run: |
+          Set-Content -Path apps/desktop/.env.windows -Encoding utf8 -Value 'DSH_DESKTOP_VARIANT=community'
+          Get-Content apps/desktop/.env.windows
+
+      # The canonical unsigned Windows command. It prepares the runtime, builds and packages the
+      # application, and runs the packaged-runtime smoke itself, so no second packaging implementation
+      # and no separate smoke step exists here.
+      - name: Package the community Windows x64 installer
+        shell: pwsh
+        run: pnpm run package:desktop:win:x64:unsigned
+
+      - name: Verify the community installer
+        shell: pwsh
+        run: |
+          $version = (Get-Content apps/desktop/package.json -Raw | ConvertFrom-Json).version
+          $root = '.dsh-build/win-x64-community'
+          $expected = "deepseek-harness-$version-win-x64-community-unsigned.exe"
+          $installer = Get-Item -LiteralPath (Join-Path $root $expected) -ErrorAction SilentlyContinue
+          if ($null -eq $installer) {
+            throw "missing expected community installer $expected in $root"
+          }
+          $names = @(Get-ChildItem -LiteralPath $root -File | ForEach-Object { $_.Name })
+          Write-Output "artifacts: $($names -join ', ')"
+          foreach ($name in $names) {
+            if ($name -match '-dev') {
+              throw "a development artifact was produced: $name"
+            }
+            if ($name -match '^deepseek-harness-.*-win-x64(-unsigned)?\.exe$') {
+              throw "a release-named artifact was produced: $name"
+            }
+          }
+          # A packaged Windows installer measures roughly 314 MB (0.1.7-rc.1, unsigned), because it
+          # carries the bundled runtime and the LibreOfficeKit engine. The floor only catches a stub
+          # or a truncated artifact; it is deliberately far below today's size so a trimmed future
+          # runtime does not fail here.
+          if ($installer.Length -lt 100MB) {
+            throw "installer is too small to be complete: $($installer.Length) bytes"
+          }
+          $hash = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash
+          $size = [math]::Round($installer.Length / 1MB, 1)
+          Write-Output "installer: $($installer.Name) ($size MiB)"
+          Write-Output "sha256: $hash"
+          "Community installer ``$($installer.Name)`` ($size MiB), SHA-256 ``$hash``" |
+            Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+      # Only the installer: the unpacked application, the blockmap, and the packaging journals stay in
+      # the runner's build tree, where nothing can publish them.
+      - name: Upload the community installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: community-windows-installer
+          path: .dsh-build/win-x64-community/deepseek-harness-*-win-x64-community-unsigned.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish the community release
+    needs: build
+    # Inert unless the operator asks for it, which is what keeps the first iterations build-only.
+    if: ${{ inputs.publish }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # The only job that may write, and it holds no checkout and no secret: it publishes the artifact
+    # it was handed, to the repository that ran this workflow and to no other.
+    permissions:
+      contents: write
+    environment: release-desktop-community
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: community-windows-installer
+          path: dist
+
+      - name: Verify the installer reached the publish lane unchanged
+        run: |
+          set -euo pipefail
+          ls -l dist
+          for file in dist/*; do
+            case "$file" in
+              *-community-unsigned.exe) ;;
+              *) echo "unexpected artifact in the publish lane: $file" >&2; exit 1 ;;
+            esac
+          done
+
+      - name: Create the GitHub Release
+        # This job has no checkout, so `gh` cannot discover the repository from a working tree and
+        # must be given it explicitly. It publishes to the repository that ran this workflow, and the
+        # expression keeps that true for a fork without naming one here.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # The version is read back from the artifact name the build produced, so this lane never
+          # reads the repository's contents and cannot disagree with what it publishes.
+          installer=$(basename "$(ls dist/*-community-unsigned.exe)")
+          version=${installer#deepseek-harness-}
+          version=${version%-win-x64-community-unsigned.exe}
+          hash=$(sha256sum "dist/$installer" | cut -d' ' -f1)
+          cat > notes.md <<'NOTES'
+          Unofficial community build of DeepSeek Harness. This project and its binary releases are not published, endorsed, or supported by DeepSeek. Based on the open-source DeepSeek Harness project.
+
+          DeepSeek Harness 的非官方社区构建。本项目及其二进制发行版并非由 DeepSeek 发布、认可或提供支持，基于开源 DeepSeek Harness 项目构建。
+
+          Windows x64 only, and unsigned. Verify the download against the checksum below before running it; Windows will warn about an unknown publisher.
+
+          This build uses its own application identity, install directory, shortcuts and `~/.dsh-community` home, so it installs beside a DeepSeek release without touching it. It contacts no DeepSeek update or telemetry service: mandatory updates are disabled and session-log telemetry defaults to disabled. `LICENSE` and `THIRD_PARTY_NOTICES.md` ship in the installation under `licenses/`.
+          NOTES
+          cat >> notes.md <<NOTES
+
+          - Installer: \`$installer\`
+          - SHA-256: \`$hash\`
+          - Source: \`${{ github.sha }}\`
+          NOTES
+          cat notes.md
+          gh release create "community-v$version" "dist/$installer" \
+            --target "${{ github.sha }}" \
+            --title "DeepSeek Harness Community $version (unofficial, unsigned)" \
+            --notes-file notes.md \
+            --prerelease

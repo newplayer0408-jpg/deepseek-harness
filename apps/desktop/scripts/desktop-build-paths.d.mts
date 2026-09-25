@@ -1,4 +1,5 @@
 import type { DesktopAutoUpdateTarget } from './desktop-auto-update-environment.mjs'
+import type { DesktopVariant } from './desktop-release-environment.mjs'
 
 /** Mutable target directories plus the shared immutable download cache. */
 export interface DesktopTargetBuildPaths {
@@ -30,11 +31,16 @@ export function resolveDesktopBuildTarget(
 ): DesktopAutoUpdateTarget
 
 /**
- * Return the mutable preparation and artifact directories owned by one release target.
+ * Return the mutable preparation and artifact directories owned by one release target and variant.
+ *
+ * An isolated variant owns one shallow Windows root of its own for both signing statuses, so its
+ * installer can neither overwrite a release installer nor be overwritten by one. The preparation
+ * directories stay shared, because nothing in them depends on the product identity.
  * @param target - Supported Desktop target name.
+ * @param variant - Product variant; production when a build does not select one.
  * @returns Target paths plus the shared immutable download cache.
  */
-export function desktopTargetBuildPaths(target: DesktopAutoUpdateTarget): DesktopTargetBuildPaths
+export function desktopTargetBuildPaths(target: DesktopAutoUpdateTarget, variant?: DesktopVariant): DesktopTargetBuildPaths
 
 /**
  * Return the platform and architecture of the payload one release target prepares.

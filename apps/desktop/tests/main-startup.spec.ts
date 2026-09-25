@@ -1,3 +1,4 @@
+import { defaultDshDevHome, defaultDshHome } from '@deepseek-ai/dsh-home-paths'
 import type { AccountView } from '@deepseek-ai/dsh-deepseek-account/types'
 import { WINDOWS_TITLEBAR_HEIGHT } from '../src/windows-layout.ts'
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
@@ -49,6 +50,10 @@ const harness = await vi.hoisted(async () => {
   let quitCompleted = deferred()
   let policyBlocked = deferred()
   let embeddedPolicy: unknown
+  /** Product variant the packaged manifest declares; undefined keeps the release identity. */
+  let embeddedVariant: unknown
+  /** The Harness home in effect at each desktop path resolution, in order. */
+  const observedHomes: Array<string | undefined> = []
   let closeWindowsOnQuit = false
   let updateState: DesktopUpdateState = { phase: 'idle' }
   let platformDisposeDeferred: ReturnType<typeof deferred> | undefined
@@ -215,6 +220,9 @@ const harness = await vi.hoisted(async () => {
     get policyBlocked() { return policyBlocked },
     get embeddedPolicy() { return embeddedPolicy },
     set embeddedPolicy(value: unknown) { embeddedPolicy = value },
+    get embeddedVariant() { return embeddedVariant },
+    set embeddedVariant(value: unknown) { embeddedVariant = value },
+    observedHomes,
     nextNavigation() { navigated = deferred(); return navigated.promise },
     nextHostStart() { hostStarted = deferred(); return hostStarted.promise },
     deferPlatformDispose() { platformDisposeDeferred = deferred(); return platformDisposeDeferred },
@@ -246,6 +254,8 @@ const harness = await vi.hoisted(async () => {
       embeddedPolicy = undefined
       platformDisposeDeferred = undefined
       platformCloseDeferred = undefined
+      embeddedVariant = undefined
+      observedHomes.length = 0
     },
   }
 })
@@ -292,13 +302,19 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   const original = await importOriginal<typeof import('node:fs/promises')>()
   return { ...original, readFile: vi.fn((path: Parameters<typeof original.readFile>[0], encoding?: 'utf8') => {
     if (path === join('desktop-test-app', 'package.json')) {
-      return Promise.resolve(JSON.stringify({ dshDesktopAppId: 'com.deepseek.dsh', dshMandatoryUpdatePolicy: harness.embeddedPolicy }))
+      return Promise.resolve(JSON.stringify({ dshDesktopAppId: 'com.deepseek.dsh',
+        dshMandatoryUpdatePolicy: harness.embeddedPolicy, dshDesktopVariant: harness.embeddedVariant }))
     }
     return encoding === undefined ? original.readFile(path) : original.readFile(path, encoding)
   }) }
 })
 vi.mock('../src/runtime-tree.ts', () => ({ readDesktopRuntime: () => ({ release: { version: '1.0.0' } }) }))
-vi.mock('../src/paths.ts', () => ({ resolveDesktopPaths: () => ({ profile: 'desktop-test-profile' }) }))
+// Records the Harness home in effect at each desktop path resolution, so a variant that seeds it too
+// late fails loudly instead of quietly reading the release home.
+vi.mock('../src/paths.ts', () => ({ resolveDesktopPaths: () => {
+  harness.observedHomes.push(process.env.DSH_HOME)
+  return { profile: 'desktop-test-profile' }
+} }))
 vi.mock('../src/project-manager.ts', () => ({
   DesktopProjectManager: class {
     readonly applyRelease = harness.applyRelease
@@ -396,6 +412,8 @@ beforeEach(() => {
   vi.stubEnv('DSH_DESKTOP_MANDATORY_UPDATE_CONFIG', undefined)
   vi.stubEnv('DSH_DESKTOP_UPDATE_JOURNAL_DIR', undefined)
   vi.stubEnv('DSH_CLIENT_VERSION', '1.2.3')
+  // Absent by default, so the variant bootstrap owns it and any ambient value cannot leak in.
+  vi.stubEnv('DSH_HOME', undefined)
 })
 
 afterEach(async () => {
@@ -2158,4 +2176,25 @@ it.each([['light', false], ['dark', true]] as const)('opens Platform authorizati
   harness.publishAccount(state)
   harness.publishAccount(state)
   expect(harness.openExternal).toHaveBeenCalledExactlyOnceWith(`https://platform.deepseek.com/dsh/authorize?state=state-1&theme=${theme}`)
+})
+
+describe('desktop variant state isolation', () => {
+  it('seeds the development Harness home before the first desktop path resolution', async () => {
+    harness.embeddedVariant = 'dev'
+    await import('../src/main.ts')
+    await harness.preparing.promise
+    expect(process.env.DSH_HOME).toBe(defaultDshDevHome())
+    // Path resolution already ran, and every resolution saw the isolated home rather than the release one.
+    expect(harness.observedHomes.length).toBeGreaterThan(0)
+    expect(harness.observedHomes).toEqual(harness.observedHomes.map(() => defaultDshDevHome()))
+    expect(process.env.DSH_HOME).not.toBe(defaultDshHome())
+  })
+
+  it('leaves the release Harness home alone for a production installation', async () => {
+    await import('../src/main.ts')
+    await harness.preparing.promise
+    expect(process.env.DSH_HOME).toBeUndefined()
+    expect(harness.observedHomes.length).toBeGreaterThan(0)
+    expect(harness.observedHomes).toEqual(harness.observedHomes.map(() => undefined))
+  })
 })

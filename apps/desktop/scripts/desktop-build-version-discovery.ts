@@ -20,6 +20,7 @@
 import { readdir } from 'node:fs/promises'
 import { parse } from 'semver'
 import { desktopBuildVersionPrefix, validateDesktopBuildVersion } from './desktop-build-version.mjs'
+import { COMMUNITY_ARTIFACT_MARKER, DEV_ARTIFACT_MARKER } from './desktop-release-environment.mjs'
 import { DESKTOP_AUTO_UPDATE_ENV, resolveDesktopUploadConfig } from './desktop-auto-update-environment.mjs'
 import { createDesktopCos, DESKTOP_COS_REGION } from './desktop-cos.ts'
 import type { DesktopPackageTargetName } from './package-target.ts'
@@ -30,8 +31,24 @@ const LISTING_DEADLINE_MS = 8_000
 /** Objects one listing page may return. */
 const LISTING_PAGE_SIZE = 1000
 
-/** Artifact name electron-builder writes for one build, on either platform; unsigned Windows builds add a suffix. */
-const ARTIFACT = /(?:^|\/)deepseek-harness-(?<version>.+)-(?:mac|win)-(?:arm64|x64)(?:-unsigned)?\.(?:exe|dmg|zip)$/u
+/**
+ * Product-variant markers a build inserts before its signing suffix, read from the module that owns
+ * them so a new variant cannot become invisible to numbering.
+ */
+const VARIANT_MARKERS = [DEV_ARTIFACT_MARKER, COMMUNITY_ARTIFACT_MARKER]
+
+/**
+ * Artifact name electron-builder writes for one build, on either platform.
+ *
+ * The two optional suffixes mirror `artifactName` in `electron-builder-config.mjs` and are
+ * independent: the variant marker records the product variant and `-unsigned` the signing status, in
+ * that order. A name carrying an unreadable suffix would be invisible to numbering, so this has to
+ * stay in step with the template that produces it.
+ */
+const ARTIFACT = new RegExp(
+  `(?:^|/)deepseek-harness-(?<version>.+)-(?:mac|win)-(?:arm64|x64)(?:-(?:${VARIANT_MARKERS.join('|')}))?(?:-unsigned)?\\.(?:exe|dmg|zip)$`,
+  'u',
+)
 
 /** Inputs that decide which versions are already taken. */
 export interface DesktopBuildVersionSuggestionOptions {

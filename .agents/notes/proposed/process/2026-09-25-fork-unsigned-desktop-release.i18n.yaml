@@ -1,0 +1,40 @@
+# Bilingual-pair consistency record for 2026-09-25-fork-unsigned-desktop-release.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/proposed/process/2026-09-25-fork-unsigned-desktop-release.md
+/agent-note-unsigned-community-desktop-release-from-a-fork:
+  en: fef111e1062b38ce
+  zh: df76c60c7e02bec4
+/agent-note-unsigned-community-desktop-release-from-a-fork/problem:
+  en: 7ca6df16a7349f6c
+  zh: 12200a7452602d16
+/agent-note-unsigned-community-desktop-release-from-a-fork/proposal:
+  en: 7d458679b878126a
+  zh: 1ead604aeba693f4
+/agent-note-unsigned-community-desktop-release-from-a-fork/proposal/community-identity:
+  en: c81190362d8d9d58
+  zh: ac77f57fca50d929
+/agent-note-unsigned-community-desktop-release-from-a-fork/proposal/state-isolation:
+  en: a9fcceb6520148cb
+  zh: 99c80dac4a00bd83
+/agent-note-unsigned-community-desktop-release-from-a-fork/proposal/no-upstream-service-contact:
+  en: 69265c543691481d
+  zh: f3ddaf379abb7521
+/agent-note-unsigned-community-desktop-release-from-a-fork/proposal/license-and-notices:
+  en: dec5ca16465d3cab
+  zh: 0bf8b373b98023fd
+/agent-note-unsigned-community-desktop-release-from-a-fork/proposal/release-workflow:
+  en: c2823043acb97ee7
+  zh: a38e488bf89c4b46
+/agent-note-unsigned-community-desktop-release-from-a-fork/proposal/branding:
+  en: 632b85731e703640
+  zh: 6dbd86b76576efb8
+/agent-note-unsigned-community-desktop-release-from-a-fork/alternatives-considered:
+  en: 423aa31e19f38f85
+  zh: 3ddfeb9f5c5aec2e
+/agent-note-unsigned-community-desktop-release-from-a-fork/acceptance-criteria:
+  en: 70487d6c29462823
+  zh: b5efd693d91814b8
+/agent-note-unsigned-community-desktop-release-from-a-fork/risks:
+  en: 296b81ebeeb1de9d
+  zh: 41e82f329e114134

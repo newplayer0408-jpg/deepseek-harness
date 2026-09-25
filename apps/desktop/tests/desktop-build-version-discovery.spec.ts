@@ -6,6 +6,10 @@ import {
   desktopBuildDateSegment,
   suggestDesktopBuildVersion,
 } from '../scripts/desktop-build-version-discovery.ts'
+import {
+  COMMUNITY_ARTIFACT_MARKER,
+  DEV_ARTIFACT_MARKER,
+} from '../scripts/desktop-release-environment.mjs'
 
 const PRERELEASE = '0.1.6-alpha.2'
 const STABLE = '0.1.6'
@@ -78,5 +82,49 @@ describe('desktop build version discovery', () => {
     ])
     await expect(suggestDesktopBuildVersion({ productVersion: PRERELEASE, target: 'win-x64', environment: {}, date: DATE, artifactsRoot }))
       .resolves.toBe(`${PRERELEASE}.${DATE}.3`)
+  })
+
+  it('counts development artifacts, which number inside their own output root', async () => {
+    // The development variant writes a `-dev` marker before `-unsigned`; numbering has to read it, or
+    // a second development build would reuse the version of the first.
+    const artifactsRoot = await artifactsWith([
+      `deepseek-harness-${PRERELEASE}.${DATE}.6-win-x64-dev-unsigned.exe`,
+      `deepseek-harness-${PRERELEASE}.${DATE}.6-win-x64-dev-unsigned.exe.blockmap`,
+    ])
+    await expect(suggestDesktopBuildVersion({ productVersion: PRERELEASE, target: 'win-x64', environment: {}, date: DATE, artifactsRoot }))
+      .resolves.toBe(`${PRERELEASE}.${DATE}.7`)
+  })
+
+  it('counts community artifacts, which number inside their own output root', async () => {
+    // Same contract for the community marker: it sits between the architecture and the signing suffix,
+    // so a name it could not parse would let a second community build reuse the first one's version.
+    const artifactsRoot = await artifactsWith([
+      `deepseek-harness-${PRERELEASE}.${DATE}.6-win-x64-community-unsigned.exe`,
+      `deepseek-harness-${PRERELEASE}.${DATE}.6-win-x64-community-unsigned.exe.blockmap`,
+    ])
+    await expect(suggestDesktopBuildVersion({ productVersion: PRERELEASE, target: 'win-x64', environment: {}, date: DATE, artifactsRoot }))
+      .resolves.toBe(`${PRERELEASE}.${DATE}.7`)
+  })
+
+  it('recognises the marker of every variant the release environment defines', async () => {
+    // Driven off the marker constants themselves, so adding a variant without teaching numbering its
+    // marker fails here rather than silently letting two builds of it share a version.
+    for (const marker of [DEV_ARTIFACT_MARKER, COMMUNITY_ARTIFACT_MARKER]) {
+      const artifactsRoot = await artifactsWith([
+        `deepseek-harness-${PRERELEASE}.${DATE}.8-win-x64-${marker}-unsigned.exe`,
+      ])
+      await expect(suggestDesktopBuildVersion({ productVersion: PRERELEASE, target: 'win-x64', environment: {}, date: DATE, artifactsRoot }))
+        .resolves.toBe(`${PRERELEASE}.${DATE}.9`)
+    }
+  })
+
+  it('does not read a marker it was not told about as a release artifact', async () => {
+    // An unregistered marker leaves the name unmatched rather than parsing it as a release build, so
+    // the failure mode is invisibility — which is why the marker list above is the guard.
+    const artifactsRoot = await artifactsWith([
+      `deepseek-harness-${PRERELEASE}.${DATE}.4-win-x64-canary-unsigned.exe`,
+    ])
+    await expect(suggestDesktopBuildVersion({ productVersion: PRERELEASE, target: 'win-x64', environment: {}, date: DATE, artifactsRoot }))
+      .resolves.toBe(`${PRERELEASE}.${DATE}.1`)
   })
 })

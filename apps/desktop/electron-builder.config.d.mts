@@ -4,7 +4,8 @@ import type { AfterPackContext, BeforePackContext } from 'app-builder-lib'
 export interface DesktopElectronBuilderConfig {
   readonly appId: string
   readonly artifactName: string
-  readonly protocols: readonly [{ readonly name: 'DeepSeek Harness'; readonly schemes: readonly ['dsh'] }]
+  /** Registered scheme description; it follows the product name, so an isolated variant registers its own. */
+  readonly protocols: readonly [{ readonly name: string, readonly schemes: readonly ['dsh'] }]
   readonly directories: {
     readonly output: string
   }
@@ -16,13 +17,39 @@ export interface DesktopElectronBuilderConfig {
     { readonly from: string, readonly to: 'dsh', readonly filter: readonly ['**/*'] },
     { readonly from: string, readonly to: 'dsh/node_modules', readonly filter: readonly ['**/*'] },
   ]
-  readonly extraMetadata: { readonly dshDesktopAppId: string }
+  readonly extraMetadata: {
+    readonly dshDesktopAppId: string
+    /** Present only on a local build, which takes its own package name so Electron derives a separate user data directory. */
+    readonly name?: string
+    /** Present only on a local build, which identifies itself as a variant of one release. */
+    readonly dshDesktopVariant?: string
+    /**
+     * Present on every variant except community, which has no policy service: the shell builds its
+     * policy client only when this field reaches the packaged manifest.
+     */
+    readonly dshMandatoryUpdatePolicy?: {
+      readonly origin: string
+      readonly allowedPageOrigins: readonly string[]
+      readonly allowedAuthOrigins?: readonly string[]
+      readonly authentication: 'anonymous' | 'feishu-test'
+    }
+  }
+  readonly productName: string
   readonly asarUnpack: readonly string[]
   readonly extraResources: readonly [
     { readonly from: string, readonly to: 'runtime' },
     { readonly from: string, readonly to: 'icon.png' },
     ...{ readonly from: string, readonly to: 'tray.ico' }[],
   ]
+  /**
+   * Files electron-builder places beside the executable. Populated only for the community variant,
+   * which must carry the repository's license and notices; a release carries none, so its packaged
+   * file set is unchanged.
+   */
+  readonly extraFiles: readonly {
+    readonly from: string
+    readonly to: 'licenses/LICENSE' | 'licenses/THIRD_PARTY_NOTICES.md'
+  }[]
   readonly mac: {
     readonly extendInfo: { readonly NSMicrophoneUsageDescription: string }
     readonly identity: string | undefined

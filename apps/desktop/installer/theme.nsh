@@ -12,6 +12,8 @@
 !define INSTALLER_PROGRESS_WIDTH 472
 !define INSTALLER_PROGRESS_HEIGHT 6
 !define INSTALLER_PROGRESS_DIAMETER 4
+; Sits in the free band between the brand image and the destination row.
+!define INSTALLER_SHORTCUT_Y 386
 !define INSTALLER_STATUS_Y 512
 !define INSTALLER_STATUS_HEIGHT 22
 !define INSTALLER_FONT "Microsoft YaHei UI"
