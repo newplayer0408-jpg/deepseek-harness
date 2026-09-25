@@ -1,6 +1,7 @@
 /** Select isolated qualification inputs without weakening the ordinary Windows installer or signing hooks. */
 import { join } from 'node:path'
 import { createElectronBuilderConfig } from './electron-builder-config.mjs'
+import { DESKTOP_PRODUCTION_VARIANT, resolveDesktopVariant } from './desktop-release-environment.mjs'
 import { readInstalledUpdateRun } from './installed-update-qualification.ts'
 import { verifyInstalledUpdateApplication } from './prepare-installed-update-application.ts'
 import { verifyDesktopRuntime } from '../src/runtime-tree.ts'
@@ -16,8 +17,9 @@ export async function createInstalledUpdateBuilderConfig(manifest: string, versi
   const run = await readInstalledUpdateRun(manifest)
   if (!run.versions.includes(version)) throw new Error('installed update: package version is outside the qualification run')
   if (environment.DSH_DESKTOP_AUTO_UPDATE_ENV !== 'test' || environment.DSH_DESKTOP_UNSIGNED === '1'
+    || resolveDesktopVariant(environment) !== DESKTOP_PRODUCTION_VARIANT
     || environment.DOWNLOAD_TEST_ORIGIN !== run.origin || environment.DOWNLOAD_TEST_COS_BUCKET !== run.bucket) {
-    throw new Error('installed update: signed ordinary-update qualification requires matching test deployment settings')
+    throw new Error('installed update: signed ordinary-update qualification requires matching test deployment settings and a production product variant')
   }
   const application = await verifyInstalledUpdateApplication(run.root)
   const dsh = join(run.root, version, 'dsh')

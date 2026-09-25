@@ -42,6 +42,8 @@ ManifestDPIAware true
   StrCpy $hasPerMachineInstallation 0
   StrCpy $hasPerUserInstallation 1
   StrCpy $InstallerPath $INSTDIR
+  ; A silent run never shows the welcome page, so it keeps the desktop shortcut the release creates.
+  StrCpy $InstallerShortcutState 1
   StrCpy $InstallerTheme "auto"
   ${GetParameters} $0
   ${GetOptions} $0 "/THEME=" $1

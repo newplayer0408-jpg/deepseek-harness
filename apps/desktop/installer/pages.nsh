@@ -17,7 +17,11 @@ Var InstallerEdit
 Var InstallerEditFrame
 Var InstallerBrowse
 Var InstallerLaunch
+Var InstallerShortcut
 Var InstallerExpanded
+; Consumed by the injected install section, which owns the shortcut the welcome page chose.
+; Declared beside the control so both the page and the section resolve the same name.
+Var InstallerShortcutState
 !include "${__FILEDIR__}\path.nsh"
 !include "${__FILEDIR__}\drawing.nsh"
 
@@ -133,6 +137,31 @@ Function InstallerCreate
     !insertmacro InstallerPlace $InstallerBrowse 456 434 80 34
     ${NSD_OnClick} $InstallerBrowse InstallerBrowsePath
     ${NSD_OnNotify} $InstallerBrowse InstallerPaintButton
+    ; The destination row gives this room above it and the primary button below it.
+    ${NSD_CreateCheckbox} 0 0 0 0 "$(INSTALLER_DESKTOP_SHORTCUT)"
+    Pop $InstallerShortcut
+    SendMessage $InstallerShortcut ${WM_SETFONT} $InstallerSmallFont 1
+    System::Call 'user32::GetDC(p $InstallerShortcut) p.r4'
+    System::Call 'gdi32::SelectObject(p r4, p $InstallerSmallFont) p.r5'
+    StrLen $0 "$(INSTALLER_DESKTOP_SHORTCUT)"
+    System::Alloc 8
+    Pop $6
+    System::Call 'gdi32::GetTextExtentPoint32W(p r4, w "$(INSTALLER_DESKTOP_SHORTCUT)", i r0, p r6)'
+    System::Call '*$6(i .r7)'
+    System::Free $6
+    System::Call 'gdi32::SelectObject(p r4, p r5)'
+    System::Call 'user32::ReleaseDC(p $InstallerShortcut, p r4)'
+    System::Call 'kernel32::MulDiv(i 42, i $InstallerDpi, i 96) i.r2'
+    IntOp $2 $2 + $7
+    IntOp $0 $InstallerSize - $2
+    IntOp $0 $0 / 2
+    System::Call 'kernel32::MulDiv(i ${INSTALLER_SHORTCUT_Y}, i $InstallerDpi, i 96) i.r1'
+    System::Call 'kernel32::MulDiv(i 32, i $InstallerDpi, i 96) i.r3'
+    System::Call 'user32::MoveWindow(p $InstallerShortcut, i r0, i r1, i r2, i r3, i 1)'
+    !insertmacro InstallerControlColors $InstallerShortcut
+    ${NSD_OnNotify} $InstallerShortcut InstallerPaintCheckbox
+    ; An installation that asks nothing else still creates the shortcut the release always created.
+    ${NSD_Check} $InstallerShortcut
     ${NSD_CreateCheckbox} 0 0 0 0 "$(INSTALLER_LAUNCH)"
     Pop $InstallerLaunch
     SendMessage $InstallerLaunch ${WM_SETFONT} $InstallerSmallFont 1
@@ -185,12 +214,15 @@ Function InstallerRender
     ShowWindow $InstallerEditFrame 0
     ShowWindow $InstallerBrowse 0
     ShowWindow $InstallerLaunch 0
+    ShowWindow $InstallerShortcut 0
     ShowWindow $InstallerStatus 0
     ${If} $InstallerPhase == "success"
         ${NSD_SetText} $InstallerButton "$(INSTALLER_FINISH)"
         ShowWindow $InstallerLaunch 5
     ${Else}
         ${NSD_SetText} $InstallerButton "$(INSTALLER_INSTALL)"
+        ; Only the page that starts the installation may choose what it creates.
+        ShowWindow $InstallerShortcut 5
         ${If} $InstallerExpanded == 1
             ShowWindow $InstallerEditFrame 5
             ShowWindow $InstallerEdit 5
@@ -209,6 +241,8 @@ FunctionEnd
 ; Page leave callbacks also run when Enter activates NSIS's hidden default button.
 Function InstallerWelcomeLeave
     ${NSD_GetText} $InstallerEdit $InstallerPath
+    ; Publish the choice before the install section runs; a silent run keeps the default instead.
+    ${NSD_GetState} $InstallerShortcut $InstallerShortcutState
     Call InstallerPreflight
     ${If} $InstallerError != ""
         MessageBox MB_OK|MB_ICONEXCLAMATION "$InstallerError"

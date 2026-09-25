@@ -7,7 +7,14 @@ import { fileURLToPath } from 'node:url'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import {
+  deriveDesktopDevIdentity,
+  DESKTOP_DEV_VARIANT,
+  DESKTOP_VARIANT_ENV,
+  DESKTOP_VARIANT_METADATA,
+  desktopVariantSuffix,
   resolveDesktopAppId,
+  resolveDesktopProductName,
+  resolveDesktopVariant,
   resolveMacOSNotarizationEnvironment,
   resolveMacOSSigningEnvironment,
 } from './desktop-release-environment.mjs'
@@ -50,7 +57,8 @@ export function createElectronBuilderConfig(
   preparedRuntime = undefined,
   preparedRuntimeVersion = undefined,
 ) {
-  const appId = resolveDesktopAppId(env)
+  const releaseAppId = resolveDesktopAppId(env)
+  const variant = resolveDesktopVariant(env)
   const policy = resolveDesktopPolicyEnvironment(env)
   const targetPlatform = env.DSH_DESKTOP_TARGET_PLATFORM
   const resolvedPlatform = targetPlatform ?? hostPlatform
@@ -60,12 +68,25 @@ export function createElectronBuilderConfig(
   }
   const unsigned = env.DSH_DESKTOP_UNSIGNED === '1'
   if (unsigned && resolvedPlatform !== 'win32') throw new Error('desktop package: unsigned builds require Windows')
+  // Signing status and product variant are independent inputs, so the variant alone selects the
+  // installed identity: a development build cannot share an install directory, an uninstall entry, a
+  // shortcut, or a state root with a release, while an unsigned release keeps the release identity.
+  const identity = variant === DESKTOP_DEV_VARIANT ? deriveDesktopDevIdentity(releaseAppId) : undefined
+  const appId = identity?.appId ?? releaseAppId
+  const productName = resolveDesktopProductName(variant)
+  // A development build is a Windows-local build. The Windows target is the one whose installer,
+  // shortcut ownership, uninstaller entry, and shallow output root the variant is defined against;
+  // every other target would produce a development application with no isolation behind it, so the
+  // combination fails here instead of half-way through a build.
+  if (identity !== undefined && resolvedPlatform !== 'win32') {
+    throw new Error(`desktop package: ${DESKTOP_VARIANT_ENV}=${DESKTOP_DEV_VARIANT} requires the win32 target`)
+  }
   const packagesMacOS = targetPlatform === 'darwin' || (targetPlatform === undefined && hostPlatform === 'darwin')
   const packagesWindows = resolvedPlatform === 'win32'
   if (resolvedPlatform === 'win32') installWindowsDirectoryInstaller()
   const macOSSigning = packagesMacOS ? resolveMacOSSigningEnvironment(env) : undefined
   if (packagesMacOS) resolveMacOSNotarizationEnvironment(env)
-  const buildPaths = desktopTargetBuildPaths(resolveDesktopBuildTarget(env, hostPlatform, hostArch))
+  const buildPaths = desktopTargetBuildPaths(resolveDesktopBuildTarget(env, hostPlatform, hostArch), variant)
   let primaryRuntimeDestination
   let dshDestination
   let windowsCode = []
@@ -103,12 +124,20 @@ export function createElectronBuilderConfig(
     extraMetadata: {
       dshDesktopAppId: appId,
       dshMandatoryUpdatePolicy: policy,
+      // A local build also carries its own package name: Electron derives the user data directory, and
+      // therefore the Chromium profile and the single-instance lock, from that name, and the generated
+      // uninstaller removes the same directory. Deriving both from one value keeps them in step.
+      ...identity === undefined ? {} : { name: identity.packageName, [DESKTOP_VARIANT_METADATA]: identity.variant },
       ...buildVersion === productVersion ? {} : { version: buildVersion },
       ...packaged === undefined ? {} : { dshBuildCommit: packaged.commit, dshBuildDirty: packaged.dirty },
     },
-    productName: 'DeepSeek Harness',
-    // Unsigned builds carry their own suffix so a shared file can never pass for a release artifact.
-    artifactName: `deepseek-harness-\${version}-\${os}-\${arch}${unsigned ? '-unsigned' : ''}.\${ext}`,
+    productName,
+    // Variant and signing status each contribute a suffix, in a fixed order and independent of each
+    // other: a release keeps its published name, `-unsigned` records the signing status, and `-dev`
+    // marks a development build whatever that status is. This name is what keeps a development
+    // installer unmistakable outside the installed application, and it also keeps the two variants'
+    // installer and blockmap names from colliding.
+    artifactName: `deepseek-harness-\${version}-\${os}-\${arch}${desktopVariantSuffix(variant)}${unsigned ? '-unsigned' : ''}.\${ext}`,
     directories: { output: unsigned ? buildPaths.unsignedArtifacts : buildPaths.artifacts },
     asar: true,
     electronDist: buildPaths.electron,

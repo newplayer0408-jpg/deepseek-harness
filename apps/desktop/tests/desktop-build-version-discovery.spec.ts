@@ -79,4 +79,15 @@ describe('desktop build version discovery', () => {
     await expect(suggestDesktopBuildVersion({ productVersion: PRERELEASE, target: 'win-x64', environment: {}, date: DATE, artifactsRoot }))
       .resolves.toBe(`${PRERELEASE}.${DATE}.3`)
   })
+
+  it('counts development artifacts, which number inside their own output root', async () => {
+    // The development variant writes a `-dev` marker before `-unsigned`; numbering has to read it, or
+    // a second development build would reuse the version of the first.
+    const artifactsRoot = await artifactsWith([
+      `deepseek-harness-${PRERELEASE}.${DATE}.6-win-x64-dev-unsigned.exe`,
+      `deepseek-harness-${PRERELEASE}.${DATE}.6-win-x64-dev-unsigned.exe.blockmap`,
+    ])
+    await expect(suggestDesktopBuildVersion({ productVersion: PRERELEASE, target: 'win-x64', environment: {}, date: DATE, artifactsRoot }))
+      .resolves.toBe(`${PRERELEASE}.${DATE}.7`)
+  })
 })

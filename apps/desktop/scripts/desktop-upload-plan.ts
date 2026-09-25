@@ -13,6 +13,7 @@ import {
   resolveDesktopUploadConfig,
 } from './desktop-auto-update-environment.mjs'
 import { desktopTargetBuildPaths } from './desktop-build-paths.mjs'
+import { DESKTOP_PRODUCTION_VARIANT, DESKTOP_VARIANT_ENV, resolveDesktopVariant } from './desktop-release-environment.mjs'
 import { validateDesktopBuildVersion } from './desktop-build-version.mjs'
 
 const APP_ROOT = resolve(import.meta.dirname, '..')
@@ -182,6 +183,12 @@ export async function createDesktopUploadPlan(
     throw new Error(`desktop upload: unsupported target ${String(targetName)}`)
   }
   const environment = options.environment ?? process.env
+  // Publishing is a release operation. A development build is not a release of this product, so it is
+  // refused here, before a completion record or an artifact is read and long before anything is sent:
+  // the variant is what decides, never the signing status.
+  if (resolveDesktopVariant(environment) !== DESKTOP_PRODUCTION_VARIANT) {
+    throw new Error(`desktop upload: ${DESKTOP_VARIANT_ENV} must be ${DESKTOP_PRODUCTION_VARIANT}; a development build is not publishable`)
+  }
   const repositoryRoot = options.repositoryRoot ?? REPOSITORY_ROOT
   const appRoot = options.appRoot ?? APP_ROOT
   const artifactsRoot = options.artifactsRoot ?? desktopTargetBuildPaths(targetName).artifacts

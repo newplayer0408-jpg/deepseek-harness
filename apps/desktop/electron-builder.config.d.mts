@@ -16,7 +16,14 @@ export interface DesktopElectronBuilderConfig {
     { readonly from: string, readonly to: 'dsh', readonly filter: readonly ['**/*'] },
     { readonly from: string, readonly to: 'dsh/node_modules', readonly filter: readonly ['**/*'] },
   ]
-  readonly extraMetadata: { readonly dshDesktopAppId: string }
+  readonly extraMetadata: {
+    readonly dshDesktopAppId: string
+    /** Present only on a local build, which takes its own package name so Electron derives a separate user data directory. */
+    readonly name?: string
+    /** Present only on a local build, which identifies itself as a variant of one release. */
+    readonly dshDesktopVariant?: string
+  }
+  readonly productName: string
   readonly asarUnpack: readonly string[]
   readonly extraResources: readonly [
     { readonly from: string, readonly to: 'runtime' },
