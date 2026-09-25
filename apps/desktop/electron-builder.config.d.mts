@@ -39,6 +39,7 @@ export interface DesktopElectronBuilderConfig {
   readonly extraResources: readonly [
     { readonly from: string, readonly to: 'runtime' },
     { readonly from: string, readonly to: 'icon.png' },
+    ...{ readonly from: string, readonly to: 'tray.ico' }[],
   ]
   /**
    * Files electron-builder places beside the executable. Populated only for the community variant,
