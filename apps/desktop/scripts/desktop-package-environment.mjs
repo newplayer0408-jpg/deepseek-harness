@@ -4,7 +4,7 @@ import { accessSync, constants, readFileSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseEnv } from 'node:util'
-import { resolveDesktopAppId, resolveDesktopVariant, resolveMacOSNotarizationEnvironment, resolveMacOSSigningEnvironment, resolveNpmRegistry } from './desktop-release-environment.mjs'
+import { DESKTOP_COMMUNITY_VARIANT, resolveDesktopAppId, resolveDesktopVariant, resolveMacOSNotarizationEnvironment, resolveMacOSSigningEnvironment, resolveNpmRegistry } from './desktop-release-environment.mjs'
 import { resolveDesktopAutoUpdateConfig } from './desktop-auto-update-environment.mjs'
 import { createWindowsTokenSigner } from './windows-sign.mjs'
 import { resolveDesktopPolicyEnvironment } from './desktop-policy-environment.mjs'
@@ -77,10 +77,15 @@ function requireReadableFile(environment, name) {
  * @returns {void}
  */
 export function validateDesktopPackageEnvironment(environment, target, options = {}) {
-  resolveDesktopAppId(environment)
-  resolveDesktopVariant(environment)
+  const variant = resolveDesktopVariant(environment)
+  // A community build pins its own application identifier and belongs to no DeepSeek deployment, so
+  // the release identifier and the policy origin are release-only inputs: it reads neither, and
+  // requiring them would demand settings this variant must not depend on.
+  if (variant !== DESKTOP_COMMUNITY_VARIANT) {
+    resolveDesktopAppId(environment)
+    resolveDesktopPolicyEnvironment(environment, variant)
+  }
   resolveNpmRegistry(environment)
-  resolveDesktopPolicyEnvironment(environment)
   if (target.platform === 'darwin') resolveMacOSPackageSettings(environment)
   else resolveWindowsPackageSettings(environment)
   if (options.unsigned) return

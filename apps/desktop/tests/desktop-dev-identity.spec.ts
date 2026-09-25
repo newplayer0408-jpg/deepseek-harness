@@ -1,9 +1,11 @@
 /**
  * Signing status and product variant are independent inputs. An unsigned release keeps the release
- * identity, and only an explicitly selected development variant takes a derived identity that
- * cannot share an install directory, an uninstall entry, a shortcut, or a state root with a release.
+ * identity, and only an explicitly selected variant takes an identity of its own that cannot share an
+ * install directory, an uninstall entry, a shortcut, or a state root with a release or with another
+ * variant. A community build pins that identity instead of deriving it, so no release setting —
+ * including a release application identifier — can reach it.
  */
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
@@ -12,17 +14,24 @@ import { AppInfo, Packager } from 'app-builder-lib'
 import { describe, expect, it } from 'vitest'
 import { createElectronBuilderConfig } from '../scripts/electron-builder-config.mjs'
 import {
+  COMMUNITY_APP_ID,
+  COMMUNITY_ARTIFACT_MARKER,
+  COMMUNITY_PACKAGE_NAME,
+  COMMUNITY_PRODUCT_NAME,
   deriveDesktopDevIdentity,
+  DESKTOP_COMMUNITY_VARIANT,
   DESKTOP_DEV_VARIANT,
   DESKTOP_PRODUCTION_VARIANT,
   DESKTOP_VARIANT_ENV,
   DESKTOP_VARIANT_METADATA,
   desktopVariantSuffix,
   DEV_APP_ID_SUFFIX,
+  DEV_ARTIFACT_MARKER,
   DEV_PACKAGE_NAME,
   DEV_PRODUCT_NAME,
   resolveDesktopAppId,
   resolveDesktopVariant,
+  resolveDesktopVariantIdentity,
 } from '../scripts/desktop-release-environment.mjs'
 
 const require = createRequire(import.meta.url)
@@ -93,6 +102,25 @@ function installedIdentity(config: ReturnType<typeof createElectronBuilderConfig
   }
 }
 
+/**
+ * Split a path-ish value into comparable segments.
+ * @param value - Install-directory or package-name path.
+ * @returns Its non-empty segments.
+ */
+const segments = (value: string): string[] => value.split(/[\\/]+/u)
+
+/**
+ * Whether one path value strictly contains another.
+ * @param parent - Candidate ancestor.
+ * @param child - Candidate descendant.
+ * @returns True when the child extends the parent.
+ */
+function isAncestor(parent: string, child: string): boolean {
+  const head = segments(parent)
+  const tail = segments(child)
+  return head.length < tail.length && head.every((part, index) => tail[index] === part)
+}
+
 // Resolved once at collection: the release path loads the whole builder toolchain, which must not sit
 // inside a test body's timeout budget.
 const releaseConfig = createElectronBuilderConfig(macOSReleaseEnvironment, 'darwin', 'arm64')
@@ -102,6 +130,28 @@ const unsignedIdentity = installedIdentity(unsignedConfig)
 const localConfig = createElectronBuilderConfig(
   { ...windowsUnsignedEnvironment, [DESKTOP_VARIANT_ENV]: DESKTOP_DEV_VARIANT }, 'win32', 'x64')
 const localIdentity = installedIdentity(localConfig)
+/**
+ * A community build carries the variant line and nothing else a release would configure. It states no
+ * application identifier at all, which is what proves the pinned identity does not need one.
+ */
+const communityEnvironment = {
+  [DESKTOP_VARIANT_ENV]: DESKTOP_COMMUNITY_VARIANT,
+  DSH_DESKTOP_TARGET_PLATFORM: 'win32',
+  DSH_DESKTOP_TARGET_ARCH: 'x64',
+  DSH_DESKTOP_UNSIGNED: '1',
+}
+const communityConfig = createElectronBuilderConfig(communityEnvironment, 'win32', 'x64')
+const communityIdentity = installedIdentity(communityConfig)
+/**
+ * The same community build with release settings left in the file. Every one of them must be ignored:
+ * a community binary must not be steerable by whichever release configuration happens to be present.
+ */
+const communityWithReleaseSettingsConfig = createElectronBuilderConfig({
+  ...communityEnvironment,
+  DSH_DESKTOP_APP_ID: RELEASE_APP_ID,
+  DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN: macOSReleaseEnvironment.DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN,
+  DSH_DESKTOP_MANDATORY_UPDATE_PROD_ORIGIN: macOSReleaseEnvironment.DSH_DESKTOP_MANDATORY_UPDATE_PROD_ORIGIN,
+}, 'win32', 'x64')
 
 describe('desktop product variant', () => {
   it('selects the variant from an explicit input and defaults to production', () => {
@@ -109,6 +159,7 @@ describe('desktop product variant', () => {
     expect(resolveDesktopVariant({ [DESKTOP_VARIANT_ENV]: '   ' })).toBe(DESKTOP_PRODUCTION_VARIANT)
     expect(resolveDesktopVariant({ [DESKTOP_VARIANT_ENV]: DESKTOP_PRODUCTION_VARIANT })).toBe(DESKTOP_PRODUCTION_VARIANT)
     expect(resolveDesktopVariant({ [DESKTOP_VARIANT_ENV]: DESKTOP_DEV_VARIANT })).toBe(DESKTOP_DEV_VARIANT)
+    expect(resolveDesktopVariant({ [DESKTOP_VARIANT_ENV]: DESKTOP_COMMUNITY_VARIANT })).toBe(DESKTOP_COMMUNITY_VARIANT)
     expect(resolveDesktopAppId({ DSH_DESKTOP_APP_ID: RELEASE_APP_ID })).toBe(RELEASE_APP_ID)
   })
 
@@ -138,6 +189,45 @@ describe('desktop product variant', () => {
   it('refuses an identifier the suffix would not keep well formed', () => {
     for (const invalid of ['com.deepseek harness', 'com.deepseek.harness.']) {
       expect(() => { deriveDesktopDevIdentity(invalid) }).toThrow('cannot take the .dev suffix')
+    }
+  })
+
+  it('leaves production to the release identity and gives the community build a pinned one', () => {
+    expect(resolveDesktopVariantIdentity(DESKTOP_PRODUCTION_VARIANT, windowsUnsignedEnvironment)).toBeUndefined()
+    expect(resolveDesktopVariantIdentity(DESKTOP_COMMUNITY_VARIANT, {})).toEqual({
+      appId: COMMUNITY_APP_ID,
+      productName: COMMUNITY_PRODUCT_NAME,
+      packageName: COMMUNITY_PACKAGE_NAME,
+      variant: DESKTOP_COMMUNITY_VARIANT,
+    })
+  })
+
+  it('pins the community identity outside the release namespace and outside the release setting', () => {
+    // The pinned identifier is what makes the variant independent: a development build needs the
+    // release identifier and throws without it, while a community build resolves the same identity
+    // whether that setting is absent or set to a release value.
+    expect(() => resolveDesktopVariantIdentity(DESKTOP_DEV_VARIANT, {})).toThrow('DSH_DESKTOP_APP_ID')
+    const pinned = resolveDesktopVariantIdentity(DESKTOP_COMMUNITY_VARIANT, {})
+    for (const releaseAppId of [undefined, RELEASE_APP_ID, 'com.example.other']) {
+      expect(resolveDesktopVariantIdentity(DESKTOP_COMMUNITY_VARIANT, { DSH_DESKTOP_APP_ID: releaseAppId }))
+        .toEqual(pinned)
+    }
+    // The fork's own GitHub namespace, not DeepSeek's, and never a value derived from a release one.
+    expect(COMMUNITY_APP_ID).toBe('io.github.newplayer0408.deepseek-harness')
+    expect(COMMUNITY_APP_ID.startsWith('io.github.newplayer0408.')).toBe(true)
+    expect(COMMUNITY_APP_ID).not.toContain('com.deepseek')
+    expect(COMMUNITY_APP_ID).not.toBe(RELEASE_APP_ID)
+  })
+
+  it('refuses a variant identity off Windows, where the isolation it defines does not exist', () => {
+    // The installer, the shortcut ownership, the uninstall entry, and the shallow output root are all
+    // Windows concepts, so the combination fails here rather than half-way through a build.
+    for (const variant of [DESKTOP_DEV_VARIANT, DESKTOP_COMMUNITY_VARIANT] as const) {
+      expect(() => createElectronBuilderConfig({
+        DSH_DESKTOP_APP_ID: RELEASE_APP_ID,
+        DSH_DESKTOP_TARGET_PLATFORM: 'darwin',
+        [DESKTOP_VARIANT_ENV]: variant,
+      }, 'darwin', 'arm64')).toThrow('requires the win32 target')
     }
   })
 })
@@ -179,6 +269,35 @@ describe('installed identity', () => {
     expect(releaseIdentity.packageName).toBe(productManifest.name)
   })
 
+  it('gives the community build every installed identity its own value', () => {
+    expect(communityIdentity.appId).toBe(COMMUNITY_APP_ID)
+    expect(communityIdentity.productName).toBe(COMMUNITY_PRODUCT_NAME)
+    expect(communityIdentity.packageName).toBe(COMMUNITY_PACKAGE_NAME)
+    // Compared field by field so a future shared value names the identity it would collide on: a
+    // community installation must displace neither a release nor a development installation.
+    for (const field of Object.keys(releaseIdentity) as Array<keyof typeof releaseIdentity>) {
+      expect(communityIdentity[field], `${field} must differ from the release value`).not.toBe(releaseIdentity[field])
+      expect(communityIdentity[field], `${field} must differ from the development value`).not.toBe(localIdentity[field])
+    }
+  })
+
+  it('cannot be steered by release settings left in the packaging file', () => {
+    // The pinned identifier is what the whole installed identity derives from, so a release identifier,
+    // a release update origin, and a release policy origin are all inert for this variant.
+    expect(communityWithReleaseSettingsConfig.appId).toBe(COMMUNITY_APP_ID)
+    expect(installedIdentity(communityWithReleaseSettingsConfig)).toEqual(communityIdentity)
+  })
+
+  it('carries no mandatory-update policy, so the shell builds no policy client at all', () => {
+    // Omitting the field is the whole mechanism: the shell constructs its policy client only when the
+    // packaged manifest carries one, so a community build polls nothing and reaches no origin.
+    for (const config of [communityConfig, communityWithReleaseSettingsConfig]) {
+      expect(config.extraMetadata).not.toHaveProperty('dshMandatoryUpdatePolicy')
+    }
+    // A release keeps the field, so the omission is specific to this variant rather than global.
+    expect(unsignedConfig.extraMetadata).toHaveProperty('dshMandatoryUpdatePolicy')
+  })
+
   it('names its shortcuts after the development product, never after the release', () => {
     expect(releaseIdentity.shortcutName).toBe(RELEASE_PRODUCT_NAME)
     expect(localIdentity.shortcutName).toBe(DEV_PRODUCT_NAME)
@@ -196,20 +315,32 @@ describe('installed identity', () => {
     expect(`${releaseIdentity.shortcutName}.lnk`).not.toBe(`${localIdentity.shortcutName}.lnk`)
   })
 
+  it('gives the community build shortcuts no other variant can resolve', () => {
+    expect(communityIdentity.shortcutName).toBe(COMMUNITY_PRODUCT_NAME)
+    // The pinned templates resolve both links from this installation's own registry key, so a distinct
+    // shortcut name on a distinct key is what keeps a community uninstall from removing another's link.
+    for (const other of [releaseIdentity.shortcutName, localIdentity.shortcutName]) {
+      expect(`${communityIdentity.shortcutName}.lnk`).not.toBe(`${other}.lnk`)
+    }
+  })
+
   it('cannot address a release data directory from the development uninstaller', () => {
     // The uninstaller deletes exactly one user-data path: its own package name under %APPDATA%.
     expect(readFileSync(join(templates, 'uninstaller.nsh'), 'utf8')).toContain('RMDir /r "$APPDATA\\${APP_PACKAGE_NAME}"')
-    const segments = (value: string): string[] => value.split(/[\\/]+/u)
-    const isAncestor = (parent: string, child: string): boolean => {
-      const head = segments(parent)
-      const tail = segments(child)
-      return head.length < tail.length && head.every((part, index) => tail[index] === part)
-    }
     // Both names share the `@deepseek-ai` scope but are siblings, so neither removal path contains
     // the other and the release user-data directory survives a development uninstall.
     expect(localIdentity.packageName).not.toBe(releaseIdentity.packageName)
     expect(isAncestor(localIdentity.packageName, releaseIdentity.packageName)).toBe(false)
     expect(isAncestor(releaseIdentity.packageName, localIdentity.packageName)).toBe(false)
+  })
+
+  it('cannot address another variant data directory from the community uninstaller', () => {
+    // Same removal target, three sibling names: the community uninstall moves no other variant's data.
+    for (const other of [releaseIdentity.packageName, localIdentity.packageName]) {
+      expect(communityIdentity.packageName).not.toBe(other)
+      expect(isAncestor(communityIdentity.packageName, other)).toBe(false)
+      expect(isAncestor(other, communityIdentity.packageName)).toBe(false)
+    }
   })
 })
 
@@ -250,27 +381,71 @@ describe('artifact names and output roots', () => {
     expect(development).not.toBe(artifactFilename(unsignedConfig, windowsInstaller))
   })
 
-  it('never marks a release artifact with the development marker', () => {
+  it('marks a community installer unmistakably and keeps its blockmap consistent', () => {
+    const community = artifactFilename(communityConfig, windowsInstaller)
+    expect(community).toBe('deepseek-harness-2.0.0-win-x64-community-unsigned.exe')
+    // Both files carry the marker, so neither can pass for a release artifact or for the other variant.
+    expect(`${community}.blockmap`).toBe('deepseek-harness-2.0.0-win-x64-community-unsigned.exe.blockmap')
+    expect(community).not.toBe(artifactFilename(unsignedConfig, windowsInstaller))
+    expect(community).not.toBe(artifactFilename(localConfig, windowsInstaller))
+    expect(community).toContain(COMMUNITY_ARTIFACT_MARKER)
+  })
+
+  it('never marks a release artifact with a variant marker', () => {
     for (const config of [releaseConfig, unsignedConfig]) {
-      expect(artifactFilename(config, windowsInstaller)).not.toMatch(/-dev(?:-|\.)/u)
+      const name = artifactFilename(config, windowsInstaller)
+      expect(name).not.toMatch(/-dev(?:-|\.)/u)
+      expect(name).not.toMatch(/-community(?:-|\.)/u)
     }
   })
 
   it('derives the artifact marker from the variant alone, before the signing suffix', () => {
     expect(desktopVariantSuffix(DESKTOP_PRODUCTION_VARIANT)).toBe('')
-    expect(desktopVariantSuffix(DESKTOP_DEV_VARIANT)).toBe('-dev')
-    // A signed release, an unsigned release, and a development build each end differently, and the
+    expect(desktopVariantSuffix(DESKTOP_DEV_VARIANT)).toBe(`-${DEV_ARTIFACT_MARKER}`)
+    expect(desktopVariantSuffix(DESKTOP_COMMUNITY_VARIANT)).toBe(`-${COMMUNITY_ARTIFACT_MARKER}`)
+    // A signed release, an unsigned release, and each isolated variant end differently, and the
     // variant marker sits before `-unsigned` so the two inputs never stand in for one another.
     expect(releaseConfig.artifactName).toContain('${arch}.${ext}')
     expect(unsignedConfig.artifactName).toContain('${arch}-unsigned.${ext}')
     expect(localConfig.artifactName).toContain('${arch}-dev-unsigned.${ext}')
+    expect(communityConfig.artifactName).toContain('${arch}-community-unsigned.${ext}')
   })
 
-  it('writes the two variants into output roots that cannot collide', () => {
-    // A release keeps its shallow Windows root; the development build gets a sibling of the same
-    // depth, so the LibreOfficeKit --program-directory budget still holds for both.
+  it('writes each variant into an output root of its own', () => {
+    // A release keeps its shallow Windows root; each isolated variant gets a sibling of the same
+    // depth, so the LibreOfficeKit --program-directory budget still holds for all of them and no
+    // variant's installer or assembled application can overwrite another's.
     expect(relative(REPOSITORY_ROOT, unsignedConfig.directories.output)).toBe(join('.dsh-build', 'win-x64'))
     expect(relative(REPOSITORY_ROOT, localConfig.directories.output)).toBe(join('.dsh-build', 'win-x64-dev'))
-    expect(unsignedConfig.directories.output).not.toBe(localConfig.directories.output)
+    expect(relative(REPOSITORY_ROOT, communityConfig.directories.output)).toBe(join('.dsh-build', 'win-x64-community'))
+    expect(new Set([
+      unsignedConfig.directories.output,
+      localConfig.directories.output,
+      communityConfig.directories.output,
+    ]).size).toBe(3)
+  })
+})
+
+describe('community license and notice packaging', () => {
+  it('carries the repository license and notices beside a release file set that is untouched', () => {
+    // MIT requires the notice to accompany copies, and a public community binary is a copy. The files
+    // come from the repository root, so their existence is what makes the packaging step well formed.
+    expect(communityConfig.extraFiles).toEqual([
+      { from: join(REPOSITORY_ROOT, 'LICENSE'), to: 'licenses/LICENSE' },
+      { from: join(REPOSITORY_ROOT, 'THIRD_PARTY_NOTICES.md'), to: 'licenses/THIRD_PARTY_NOTICES.md' },
+    ])
+    for (const entry of communityConfig.extraFiles) {
+      expect(existsSync(entry.from), `${entry.from} must exist to be packaged`).toBe(true)
+    }
+    // extraFiles land beside the executable, where electron-builder already places Electron's own
+    // notices, so nothing already packaged is replaced or nested in the archive.
+    for (const entry of communityConfig.extraFiles) {
+      expect(entry.to.startsWith('licenses/')).toBe(true)
+    }
+  })
+
+  it('adds nothing to a release artifact file set', () => {
+    expect(releaseConfig.extraFiles).toEqual([])
+    expect(unsignedConfig.extraFiles).toEqual([])
   })
 })

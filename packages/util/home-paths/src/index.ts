@@ -29,6 +29,17 @@ export const DSH_DEV_HOME_DIR_NAME = '.dsh-dev'
 export const DEFAULT_DSH_DEV_HOME_DISPLAY = `~/${DSH_DEV_HOME_DIR_NAME}`
 
 /**
+ * Directory name for the isolated home a community build uses.
+ *
+ * A community build is a separate product installation too, and it must not
+ * reach the home either a release or a development installation owns.
+ */
+export const DSH_COMMUNITY_HOME_DIR_NAME = '.dsh-community'
+
+/** Stable user-facing display form for the community DeepSeek Harness home. */
+export const DEFAULT_DSH_COMMUNITY_HOME_DISPLAY = `~/${DSH_COMMUNITY_HOME_DIR_NAME}`
+
+/**
  * Give a native filesystem watcher one canonical spelling of a path, even
  * when its final components do not exist yet. The deepest existing ancestor
  * is resolved through {@link realpath}; when a suffix is missing, that
@@ -82,6 +93,14 @@ export function defaultDshDevHome(): string {
 }
 
 /**
+ * Resolve the default home a community build owns, sibling to the release and development homes.
+ * @returns the absolute default community harness home path.
+ */
+export function defaultDshCommunityHome(): string {
+  return join(homedir(), DSH_COMMUNITY_HOME_DIR_NAME)
+}
+
+/**
  * Expand supported tilde prefixes against the operating-system home.
  * @param path - configured path that may begin with `~`, `~/`, or `~\`.
  * @returns the expanded path, or the original value when no supported prefix is present.
@@ -100,9 +119,9 @@ export function expandHomePath(path: string): string {
  * whitespace-only `$DSH_HOME` is treated as unset, so a blank override never
  * resolves the home to the current working directory.
  *
- * `$DSH_HOME` outranks the default, which is what lets a development build
- * seed it with {@link defaultDshDevHome} while still honouring an operator who
- * set `$DSH_HOME` deliberately.
+ * `$DSH_HOME` outranks the default, which is what lets an isolated build variant
+ * seed it with {@link defaultDshDevHome} or {@link defaultDshCommunityHome} while
+ * still honouring an operator who set `$DSH_HOME` deliberately.
  * @param configured - explicit harness-home override, which has highest precedence.
  * @param env - environment mapping used to read `DSH_HOME`.
  * @returns the normalized absolute harness home path.
@@ -137,13 +156,16 @@ export function dshCachePath(optionsOrSegment: { dshHome?: string } | string = {
  * Describe a resolved harness home symbolically for user-facing display.
  *
  * It never returns an absolute machine path: the default home is labelled
- * `~/.dsh`, the development home is labelled `~/.dsh-dev`, and any other
- * configured home is labelled `$DSH_HOME`.
+ * `~/.dsh`, the development home is labelled `~/.dsh-dev`, the community home
+ * is labelled `~/.dsh-community`, and any other configured home is labelled
+ * `$DSH_HOME`.
  * @param resolvedHome - the absolute path returned by {@link resolveDshHome}.
- * @returns `~/.dsh` for the default home, `~/.dsh-dev` for the development home, otherwise `$DSH_HOME`.
+ * @returns `~/.dsh` for the default home, `~/.dsh-dev` for the development home,
+ * `~/.dsh-community` for the community home, otherwise `$DSH_HOME`.
  */
 export function dshHomeDisplay(resolvedHome: string): string {
   if (resolvedHome === resolve(defaultDshHome())) return DEFAULT_DSH_HOME_DISPLAY
   if (resolvedHome === resolve(defaultDshDevHome())) return DEFAULT_DSH_DEV_HOME_DISPLAY
+  if (resolvedHome === resolve(defaultDshCommunityHome())) return DEFAULT_DSH_COMMUNITY_HOME_DISPLAY
   return `$${DSH_HOME_ENV}`
 }

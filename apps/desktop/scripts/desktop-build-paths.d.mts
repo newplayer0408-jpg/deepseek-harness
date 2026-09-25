@@ -33,9 +33,9 @@ export function resolveDesktopBuildTarget(
 /**
  * Return the mutable preparation and artifact directories owned by one release target and variant.
  *
- * A development variant owns one shallow Windows root of its own for both signing statuses, so a
- * development installer can neither overwrite nor be overwritten by a release installer. The
- * preparation directories stay shared, because nothing in them depends on the product identity.
+ * An isolated variant owns one shallow Windows root of its own for both signing statuses, so its
+ * installer can neither overwrite a release installer nor be overwritten by one. The preparation
+ * directories stay shared, because nothing in them depends on the product identity.
  * @param target - Supported Desktop target name.
  * @param variant - Product variant; production when a build does not select one.
  * @returns Target paths plus the shared immutable download cache.

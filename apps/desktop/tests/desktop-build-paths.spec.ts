@@ -6,8 +6,16 @@ import {
   desktopTargetPlatform,
   developmentRuntimeDirectory,
   resolveDesktopBuildTarget,
+  resolveDesktopTargetBuildPaths,
 } from '../scripts/desktop-build-paths.mjs'
-import { DESKTOP_DEV_VARIANT, DESKTOP_PRODUCTION_VARIANT } from '../scripts/desktop-release-environment.mjs'
+import {
+  COMMUNITY_ARTIFACT_MARKER,
+  DESKTOP_COMMUNITY_VARIANT,
+  DESKTOP_DEV_VARIANT,
+  DESKTOP_PRODUCTION_VARIANT,
+  DESKTOP_VARIANT_ENV,
+  DEV_ARTIFACT_MARKER,
+} from '../scripts/desktop-release-environment.mjs'
 import type { DesktopVariant } from '../scripts/desktop-release-environment.mjs'
 import {
   WINDOWS_OFFICE_PROGRAM_DIRECTORY_BUDGET,
@@ -54,44 +62,73 @@ describe('desktop build paths', () => {
     expect(relative(REPOSITORY_ROOT, windows.unsignedArtifacts)).toBe(join('.dsh-build', 'win-x64'))
   })
 
-  it('gives the development variant a shallow output root of its own', () => {
+  it('gives each isolated variant a shallow output root of its own', () => {
     const production = desktopTargetBuildPaths('win-x64', DESKTOP_PRODUCTION_VARIANT)
     const development = desktopTargetBuildPaths('win-x64', DESKTOP_DEV_VARIANT)
+    const community = desktopTargetBuildPaths('win-x64', DESKTOP_COMMUNITY_VARIANT)
     // Each variant owns one root for both signing statuses. Only the variant marker distinguishes the
-    // two names, so neither build can overwrite the other's installer, blockmap, or assembled
-    // application, and the development root stays as shallow as the release root.
+    // names, so no build can overwrite another's installer, blockmap, or assembled application, and
+    // every isolated root stays as shallow as the release root.
     expect(relative(REPOSITORY_ROOT, development.unsignedArtifacts)).toBe(join('.dsh-build', 'win-x64-dev'))
-    expect(relative(REPOSITORY_ROOT, development.artifacts)).toBe(join('.dsh-build', 'win-x64-dev'))
-    expect(development.unsignedArtifacts).not.toBe(production.unsignedArtifacts)
-    expect(development.artifacts).not.toBe(production.artifacts)
-    expect(relative(REPOSITORY_ROOT, development.unsignedArtifacts).split(sep)).toHaveLength(2)
+    expect(relative(REPOSITORY_ROOT, community.unsignedArtifacts)).toBe(join('.dsh-build', 'win-x64-community'))
+    expect(new Set([
+      production.unsignedArtifacts,
+      development.unsignedArtifacts,
+      community.unsignedArtifacts,
+    ]).size).toBe(3)
+    for (const isolated of [development, community]) {
+      expect(isolated.artifacts).toBe(isolated.unsignedArtifacts)
+      expect(isolated.artifacts).not.toBe(production.artifacts)
+      expect(relative(REPOSITORY_ROOT, isolated.unsignedArtifacts).split(sep)).toHaveLength(2)
+    }
   })
 
-  it('relocates only the Windows output, because the development variant is Windows-only', () => {
+  it('selects the isolated root from the variant in a packaging environment', () => {
+    // The packaging entry point, not just the helper, has to see the variant: this is how a community
+    // build reaches its own root without any other setting naming it.
+    const paths = resolveDesktopTargetBuildPaths({
+      [DESKTOP_VARIANT_ENV]: DESKTOP_COMMUNITY_VARIANT,
+      DSH_DESKTOP_TARGET_PLATFORM: 'win32',
+      DSH_DESKTOP_TARGET_ARCH: 'x64',
+    })
+    expect(relative(REPOSITORY_ROOT, paths.unsignedArtifacts)).toBe(join('.dsh-build', 'win-x64-community'))
+    expect(relative(REPOSITORY_ROOT, resolveDesktopTargetBuildPaths({
+      DSH_DESKTOP_TARGET_PLATFORM: 'win32', DSH_DESKTOP_TARGET_ARCH: 'x64',
+    }).unsignedArtifacts)).toBe(join('.dsh-build', 'win-x64'))
+  })
+
+  it('relocates only the Windows output, because an isolated variant is Windows-only', () => {
     const production = desktopTargetBuildPaths('win-x64', DESKTOP_PRODUCTION_VARIANT)
-    const development = desktopTargetBuildPaths('win-x64', DESKTOP_DEV_VARIANT)
-    // The preparation trees are shared, so a development build reuses the same downloaded runtime and
-    // only its own output moves; nothing identity-dependent lives in them.
-    for (const key of ['root', 'runtime', 'packageSet', 'dsh', 'dshPnpm', 'electron', 'packedDsh', 'downloads'] as const) {
-      expect(development[key], `${key} must stay shared`).toBe(production[key])
-    }
-    // electron-builder refuses the development variant off Windows, so no other target may move.
-    for (const target of ['mac-arm64', 'mac-x64'] as const) {
-      expect(desktopTargetBuildPaths(target, DESKTOP_DEV_VARIANT))
-        .toEqual(desktopTargetBuildPaths(target, DESKTOP_PRODUCTION_VARIANT))
+    for (const variant of [DESKTOP_DEV_VARIANT, DESKTOP_COMMUNITY_VARIANT] as const) {
+      const isolated = desktopTargetBuildPaths('win-x64', variant)
+      // The preparation trees are shared, so an isolated build reuses the same downloaded runtime and
+      // only its own output moves; nothing identity-dependent lives in them.
+      for (const key of ['root', 'runtime', 'packageSet', 'dsh', 'dshPnpm', 'electron', 'packedDsh', 'downloads'] as const) {
+        expect(isolated[key], `${variant}: ${key} must stay shared`).toBe(production[key])
+      }
+      // electron-builder refuses an isolated variant off Windows, so no other target may move.
+      for (const target of ['mac-arm64', 'mac-x64'] as const) {
+        expect(desktopTargetBuildPaths(target, variant))
+          .toEqual(desktopTargetBuildPaths(target, DESKTOP_PRODUCTION_VARIANT))
+      }
     }
   })
 
-  it('keeps the development Windows application inside the Office path budget', () => {
+  it('keeps every isolated Windows application inside the Office path budget', () => {
     const measured = (variant: DesktopVariant): string => windowsOfficeProgramDirectory(
       windowsAssembledResources(desktopTargetBuildPaths('win-x64', variant).unsignedArtifacts), 'win32', 'x64')
     const production = measured(DESKTOP_PRODUCTION_VARIANT)
-    const development = measured(DESKTOP_DEV_VARIANT)
-    // Longer by exactly the marker, and the reason the development root may not move back under
+    // Longer by exactly the marker, and the reason an isolated root may not move back under
     // targets/win-x64/: the pinned engine's fixed path buffer fails above the budget.
-    expect(development.length).toBe(production.length + '-dev'.length)
     expect(production.length).toBeLessThanOrEqual(WINDOWS_OFFICE_PROGRAM_DIRECTORY_BUDGET)
-    expect(development.length).toBeLessThanOrEqual(WINDOWS_OFFICE_PROGRAM_DIRECTORY_BUDGET)
+    for (const [variant, marker] of [
+      [DESKTOP_DEV_VARIANT, `-${DEV_ARTIFACT_MARKER}`],
+      [DESKTOP_COMMUNITY_VARIANT, `-${COMMUNITY_ARTIFACT_MARKER}`],
+    ] as const) {
+      const isolated = measured(variant)
+      expect(isolated.length).toBe(production.length + marker.length)
+      expect(isolated.length).toBeLessThanOrEqual(WINDOWS_OFFICE_PROGRAM_DIRECTORY_BUDGET)
+    }
   })
 
   it('shares only the immutable upstream download cache', () => {

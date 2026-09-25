@@ -19,8 +19,8 @@ const SUPPORTED_TARGETS = new Set(['mac-arm64', 'mac-x64', 'win-x64'])
  * `.dsh-build` is already the repository build-output root, so the existing ignore and cleanup rules
  * cover this output without another rule to keep in sync.
  *
- * Each Windows variant gets its own directory directly below this root, which is what keeps a
- * development build's assembled application as shallow as a release's and keeps the two from
+ * Each Windows variant gets its own directory directly below this root, which is what keeps an
+ * isolated variant's assembled application as shallow as a release's and keeps two variants from
  * overwriting each other's installers.
  */
 const WINDOWS_ARTIFACTS_ROOT = join(REPOSITORY_ROOT, '.dsh-build')
@@ -61,13 +61,14 @@ function assertSupportedTarget(target) {
  * assembled LibreOfficeKit engine has to stay within the Windows path budget; it remains isolated
  * by target and variant, and unsigned packaging is Windows-only.
  *
- * A development variant is only reachable on Windows (`electron-builder-config.mjs` refuses it
- * elsewhere), and it owns one shallow root of its own for both signing statuses. That keeps a
- * development installer from overwriting a release installer or an assembled application, and it
- * keeps the development application inside the same Office path budget. The preparation trees stay
- * shared, because nothing in them depends on the product identity.
+ * An isolated variant (anything but a release) is only reachable on Windows
+ * (`electron-builder-config.mjs` refuses it elsewhere), and it owns one shallow root of its own for
+ * both signing statuses. That keeps an isolated variant's installer from overwriting a release
+ * installer or an assembled application, keeps its own application inside the same Office path
+ * budget, and lets two isolated variants of one version assemble side by side. The preparation trees
+ * stay shared, because nothing in them depends on the product identity.
  * @param {'mac-arm64' | 'mac-x64' | 'win-x64'} target - Supported Desktop target name.
- * @param {'production' | 'dev'} [variant] - Product variant; production when a build does not select one.
+ * @param {'production' | 'dev' | 'community'} [variant] - Product variant; production when a build does not select one.
  * @returns {{ root: string, artifacts: string, unsignedArtifacts: string, runtime: string, packageSet: string, dsh: string, dshPnpm: string, electron: string, packedDsh: string, packedVendor: string, packedLandlock: string, downloads: string }} Target paths plus the shared immutable download cache.
  */
 export function desktopTargetBuildPaths(target, variant = DESKTOP_PRODUCTION_VARIANT) {
@@ -76,11 +77,11 @@ export function desktopTargetBuildPaths(target, variant = DESKTOP_PRODUCTION_VAR
   const packed = join(root, 'packed')
   const signedArtifacts = join(root, 'artifacts')
   const windows = target === 'win-x64'
-  const development = variant !== DESKTOP_PRODUCTION_VARIANT
+  const isolated = variant !== DESKTOP_PRODUCTION_VARIANT
   const windowsArtifacts = join(WINDOWS_ARTIFACTS_ROOT, `${target}${desktopVariantSuffix(variant)}`)
   return {
     root,
-    artifacts: windows && development ? windowsArtifacts : signedArtifacts,
+    artifacts: windows && isolated ? windowsArtifacts : signedArtifacts,
     unsignedArtifacts: windows ? windowsArtifacts : join(root, 'unsigned-artifacts'),
     runtime: join(root, 'runtime'),
     packageSet: join(root, 'package-set'),

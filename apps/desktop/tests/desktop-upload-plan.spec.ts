@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { load } from 'js-yaml'
 import { createDesktopUploadPlan } from '../scripts/desktop-upload-plan.ts'
 import { desktopUpdateMetadataFilename } from '../scripts/desktop-auto-update-environment.mjs'
-import { DESKTOP_DEV_VARIANT, DESKTOP_PRODUCTION_VARIANT, DESKTOP_VARIANT_ENV } from '../scripts/desktop-release-environment.mjs'
+import { DESKTOP_COMMUNITY_VARIANT, DESKTOP_DEV_VARIANT, DESKTOP_PRODUCTION_VARIANT, DESKTOP_VARIANT_ENV } from '../scripts/desktop-release-environment.mjs'
 import type { DesktopPackageTargetName } from '../scripts/package-target.ts'
 
 const temporaryDirectories: string[] = []
@@ -180,17 +180,19 @@ describe('desktop upload plan', () => {
     })).rejects.toThrow(/DOWNLOAD_TEST_RELEASE_ID/u)
   })
 
-  it('refuses a development build before it reads a completion record or any artifact', async () => {
-    const paths = await fixture('win-x64', '2.0.0', 'production')
-    // Roots that do not exist prove the variant guard runs before any file is read, so a development
+  it('refuses every isolated build before it reads a completion record or any artifact', async () => {
+    // Roots that do not exist prove the variant guard runs before any file is read, so an isolated
     // build cannot reach the release upload path even when it is packaged beside release artifacts.
     const missing = join(tmpdir(), 'dsh-desktop-upload-absent')
-    await expect(createDesktopUploadPlan('win-x64', {
-      repositoryRoot: missing,
-      appRoot: missing,
-      artifactsRoot: missing,
-      environment: { ...paths.environment, [DESKTOP_VARIANT_ENV]: DESKTOP_DEV_VARIANT },
-    })).rejects.toThrow(/not publishable/u)
+    for (const variant of [DESKTOP_DEV_VARIANT, DESKTOP_COMMUNITY_VARIANT] as const) {
+      const paths = await fixture('win-x64', '2.0.0', 'production')
+      await expect(createDesktopUploadPlan('win-x64', {
+        repositoryRoot: missing,
+        appRoot: missing,
+        artifactsRoot: missing,
+        environment: { ...paths.environment, [DESKTOP_VARIANT_ENV]: variant },
+      })).rejects.toThrow(/not publishable/u)
+    }
   })
 
   it('still publishes when the release variant is stated explicitly', async () => {

@@ -292,8 +292,9 @@ function createWindow(preload: string, show = false, primary = false): BrowserWi
 }
 
 async function main(): Promise<void> {
-  // Before anything resolves a Harness path: a development build must not read or write the state
-  // its release installation owns, and only a declared dev variant gets an isolated home.
+  // Before anything resolves a Harness path: an isolated variant must not read or write the state a
+  // release installation owns, and only a declared variant gets an isolated home. The same bootstrap
+  // seeds the telemetry default a community build carries into the Host child process it starts.
   await bootstrapDesktopVariant({ appPath: app.getAppPath() })
   void pruneCrashReports(app.getPath('logs'))
   const journalDirectory = process.env.DSH_DESKTOP_UPDATE_JOURNAL_DIR

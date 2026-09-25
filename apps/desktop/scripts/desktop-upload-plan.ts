@@ -183,11 +183,12 @@ export async function createDesktopUploadPlan(
     throw new Error(`desktop upload: unsupported target ${String(targetName)}`)
   }
   const environment = options.environment ?? process.env
-  // Publishing is a release operation. A development build is not a release of this product, so it is
-  // refused here, before a completion record or an artifact is read and long before anything is sent:
-  // the variant is what decides, never the signing status.
-  if (resolveDesktopVariant(environment) !== DESKTOP_PRODUCTION_VARIANT) {
-    throw new Error(`desktop upload: ${DESKTOP_VARIANT_ENV} must be ${DESKTOP_PRODUCTION_VARIANT}; a development build is not publishable`)
+  // Publishing is a release operation, and only the release identity has a release to publish. Every
+  // other variant is refused here, before a completion record or an artifact is read and long before
+  // anything is sent: the variant is what decides, never the signing status.
+  const variant = resolveDesktopVariant(environment)
+  if (variant !== DESKTOP_PRODUCTION_VARIANT) {
+    throw new Error(`desktop upload: ${DESKTOP_VARIANT_ENV} must be ${DESKTOP_PRODUCTION_VARIANT}; a ${variant} build is not publishable`)
   }
   const repositoryRoot = options.repositoryRoot ?? REPOSITORY_ROOT
   const appRoot = options.appRoot ?? APP_ROOT
