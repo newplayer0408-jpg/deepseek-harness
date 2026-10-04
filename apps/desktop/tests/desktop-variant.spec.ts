@@ -27,6 +27,7 @@ import {
   readDesktopVariant,
   TELEMETRY_DISABLED_MODE,
   TELEMETRY_MODE_ENV,
+  TELEMETRY_OPTOUT_ENV,
 } from '../src/desktop-variant.ts'
 import { desktopNodeEnvironment } from '../src/node-environment.ts'
 
@@ -104,12 +105,14 @@ describe('isolated variant home', () => {
 })
 
 describe('community telemetry default', () => {
-  it('is what keeps a community build from reaching the shared base collector', () => {
+  it('neutralises the session-log row the shared base bundle mounts', () => {
     // The row this variant has to neutralise, read from the bundle that owns it: an unset mode
-    // resolves to FEEDBACK_ONLY, whose exporter targets a DeepSeek host. Seeding the mode below is
-    // therefore the only thing standing between a community build and that endpoint.
+    // resolves to FEEDBACK_ONLY and the row carries an exporter, so the mode seed below is what
+    // keeps a community build's session log off that collector. What matters is the contract the
+    // variant depends on — this row reads this variable — not where the exporter happens to point,
+    // so the assertion names neither hostname nor URL and survives upstream repointing the endpoint.
+    expect(basePatch).toContain('id: session-telemetry-otel')
     expect(basePatch).toContain("mode: !!js process.env.DSH_TELEMETRY_MODE || 'FEEDBACK_ONLY'")
-    expect(basePatch).toContain('harness-telemetry.deepseeksvc.com')
     expect(TELEMETRY_MODE_ENV).toBe('DSH_TELEMETRY_MODE')
     expect(TELEMETRY_DISABLED_MODE).not.toBe('FEEDBACK_ONLY')
   })
@@ -118,6 +121,16 @@ describe('community telemetry default', () => {
     const env: NodeJS.ProcessEnv = {}
     expect(applyDesktopVariantTelemetry(DESKTOP_COMMUNITY_VARIANT, env)).toBe(TELEMETRY_DISABLED_MODE)
     expect(env[TELEMETRY_MODE_ENV]).toBe('DISABLED')
+  })
+
+  it('seeds the opt-out that covers every telemetry row the composition mounts', () => {
+    // The mode seed above reaches the session-log row only. The Desktop composition also mounts a
+    // product-telemetry exporter and a product-analytics client that read no mode of their own, so
+    // without this seed a community build would keep sending them; the launcher's opt-out is the
+    // only switch that reaches those rows.
+    const env: NodeJS.ProcessEnv = {}
+    applyDesktopVariantTelemetry(DESKTOP_COMMUNITY_VARIANT, env)
+    expect(env[TELEMETRY_OPTOUT_ENV]).toBe(TELEMETRY_DISABLED_MODE)
   })
 
   it('leaves a release and a development installation without a telemetry mode', () => {
@@ -134,6 +147,9 @@ describe('community telemetry default', () => {
     const env: NodeJS.ProcessEnv = { [TELEMETRY_MODE_ENV]: 'FEEDBACK_ONLY' }
     expect(applyDesktopVariantTelemetry(DESKTOP_COMMUNITY_VARIANT, env)).toBeUndefined()
     expect(env[TELEMETRY_MODE_ENV]).toBe('FEEDBACK_ONLY')
+    // The override replaces the whole default: a build that would seed both seeds neither, so a
+    // deliberate mode choice is never half-applied.
+    expect(env[TELEMETRY_OPTOUT_ENV]).toBeUndefined()
   })
 
   it('treats a blank mode as unset, exactly as the base row does', () => {
@@ -172,6 +188,7 @@ describe('desktop variant bootstrap', () => {
     // spawns inherits this same environment.
     expect(env.DSH_HOME).toBe(defaultDshCommunityHome())
     expect(env[TELEMETRY_MODE_ENV]).toBe(TELEMETRY_DISABLED_MODE)
+    expect(env[TELEMETRY_OPTOUT_ENV]).toBe(TELEMETRY_DISABLED_MODE)
   })
 
   it('leaves a production installation without any environment change', async () => {
@@ -183,7 +200,7 @@ describe('desktop variant bootstrap', () => {
     expect(env).toEqual({})
   })
 
-  it('carries both seeded values into the environment the Host child process is spawned with', async () => {
+  it('carries the seeded values into the environment the Host child process is spawned with', async () => {
     // The shell hands the Host its own process environment, and the Host spawn spreads that
     // environment — so composing the two here is what proves the seeded values reach the process that
     // loads the composition, rather than only the shell that seeded them.
@@ -198,6 +215,7 @@ describe('desktop variant bootstrap', () => {
       ELECTRON_RUN_AS_NODE: '1',
       DSH_HOME: defaultDshCommunityHome(),
       [TELEMETRY_MODE_ENV]: TELEMETRY_DISABLED_MODE,
+      [TELEMETRY_OPTOUT_ENV]: TELEMETRY_DISABLED_MODE,
     })
     // The shell's own environment is not mutated by building the child's.
     expect(env.ELECTRON_RUN_AS_NODE).toBeUndefined()

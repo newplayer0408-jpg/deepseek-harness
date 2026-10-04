@@ -59,8 +59,8 @@ describe('the committed version file', () => {
   it('names the upstream base this fork is synced to today, not the base a later sync targets', () => {
     const parsed: unknown = JSON.parse(readFileSync(join(APP_PATH, COMMUNITY_VERSION_FILE), 'utf8'))
     expect(parsed).toMatchObject({
-      upstreamBase: 'dsh-v0.1.7-rc.2',
-      upstreamCommit: '477b4f420553e8a52c2fbccc464d7561b239c443',
+      upstreamBase: 'dsh-v0.2.0-rc.2',
+      upstreamCommit: '639ed015397290b3745d163aafe02ffee4aa3f84',
     })
   })
 

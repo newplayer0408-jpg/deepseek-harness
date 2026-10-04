@@ -7,9 +7,11 @@
  * before any caller resolves a path under it.
  *
  * A community build belongs to no DeepSeek deployment as well, so the same bootstrap seeds the
- * telemetry mode the Host child process inherits. Seeding it here rather than in a build environment
- * is the point: a build variable describes the build, and only a value the packaged application sets
- * for itself reaches the Host a user runs.
+ * telemetry defaults the Host child process inherits: the session-log mode, and the opt-out the
+ * launcher turns into a boot patch for every telemetry and product-analytics row the composition
+ * mounts. Seeding them here rather than in a build environment is the point: a build variable
+ * describes the build, and only a value the packaged application sets for itself reaches the Host a
+ * user runs.
  *
  * The variant is read from the assembled manifest as a typed marker. It is never inferred from the
  * product name or the signing status: an unsigned release is still a release.
@@ -45,6 +47,18 @@ export type DesktopVariant =
  * first time a user recorded `/feedback` — a destination a community build must not reach.
  */
 export const TELEMETRY_MODE_ENV = 'DSH_TELEMETRY_MODE'
+
+/**
+ * Environment variable that hard-disables every telemetry and product-analytics row the Host
+ * composition mounts.
+ *
+ * A community build defaults this one too, and it is the seed that carries the actual guarantee.
+ * {@link TELEMETRY_MODE_ENV} configures the session-log row alone, so on its own it would leave the
+ * Desktop composition's product-telemetry exporter and product-analytics client switched on: the
+ * `dsh-v0.2.0-rc.2` web-app bundle inserts both for the `desktop` profile, and neither reads an
+ * environment mode, so only the launcher's opt-out patch can turn them off.
+ */
+export const TELEMETRY_OPTOUT_ENV = 'DSH_TELEMETRY_DISABLED'
 
 /** Telemetry mode that constructs no exporter, so the installation contacts no collector. */
 export const TELEMETRY_DISABLED_MODE = 'DISABLED'
@@ -100,12 +114,15 @@ export function applyDesktopVariantHome(
 }
 
 /**
- * Seed the telemetry default a variant installs for itself.
+ * Seed the telemetry defaults a variant installs for itself.
  *
- * The mode is seeded only when the environment does not already carry one, so an operator who set it
- * deliberately keeps that choice — the same precedence `$DSH_HOME` already has over a variant's
- * default home. The Host child process inherits this environment, and the launcher resolves the
- * session-log exporter row from it while loading the composition.
+ * Two seeds, because the session row and the Desktop rows are switched off by different mechanisms:
+ * {@link TELEMETRY_MODE_ENV} resolves the session-log exporter's own mode, and
+ * {@link TELEMETRY_OPTOUT_ENV} is what the launcher turns into a boot patch for every telemetry row
+ * the composition mounts. Both are seeded only when the environment does not already carry one, so
+ * an operator who set a mode deliberately keeps that choice — the same precedence `$DSH_HOME` has
+ * over a variant's default home. The Host child process inherits this environment, and the launcher
+ * resolves the composition's exporters from it while loading the profile.
  * @param variant - Product variant the installation declared.
  * @param env - Environment to seed; the caller owns the object.
  * @returns the seeded mode, or undefined when the environment was left unchanged.
@@ -117,6 +134,7 @@ export function applyDesktopVariantTelemetry(
   if (variant !== DESKTOP_COMMUNITY_VARIANT) return undefined
   if ((env[TELEMETRY_MODE_ENV]?.trim() ?? '') !== '') return undefined
   env[TELEMETRY_MODE_ENV] = TELEMETRY_DISABLED_MODE
+  if ((env[TELEMETRY_OPTOUT_ENV]?.trim() ?? '') === '') env[TELEMETRY_OPTOUT_ENV] = TELEMETRY_DISABLED_MODE
   return TELEMETRY_DISABLED_MODE
 }
 

@@ -36,22 +36,60 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
-const TELEMETRY_ROW_ID = 'session-telemetry-otel'
+/**
+ * Composition rows that carry telemetry or product analytics off the machine.
+ *
+ * The opt-out covers the whole set rather than the session-log row alone: a bundle may insert a
+ * second exporter, and an opt-out that missed it would report success while records still left the
+ * machine. The `dsh-v0.2.0-rc.2` web-app bundle is the reason this is a list — it added a
+ * Desktop-only product-telemetry exporter and a product-analytics client beside the session row,
+ * neither of which reads an environment mode of its own.
+ *
+ * Extend this list when a bundle adds such a row:
+ * `apps/desktop/tests/community-telemetry-isolation.spec.ts` enumerates the rows the shipped
+ * bundles declare and fails when one of them is missing here.
+ */
+export const TELEMETRY_ROW_IDS = [
+  'session-telemetry-otel',
+  'desktop-product-telemetry',
+  'product-analytics',
+] as const
+
+/** The session-log row, and the only row the single-row seam reports. */
+const TELEMETRY_ROW_ID = TELEMETRY_ROW_IDS[0]
 
 /**
- * Resolve the telemetry opt-out switch into its boot patch. ANY non-empty
+ * Resolve the telemetry opt-out switch into its boot patches. ANY non-empty
  * value (including `'0'`/`'false'`) disables: a privacy switch prefers
- * off-by-mistake over on-by-mistake. A composition without the telemetry row
- * exports nothing, so the switch is then trivially satisfied and no patch is
- * generated — custom profiles need not mount telemetry to run with the
- * switch set.
+ * off-by-mistake over on-by-mistake. Only rows the composition actually carries
+ * are patched, so a composition without them exports nothing: the switch is then
+ * trivially satisfied and no patch is generated — custom profiles need not mount
+ * telemetry to run with the switch set.
+ * @param disabledEnv - the raw `DSH_TELEMETRY_DISABLED` value (`undefined` when unset).
+ * @param presentRowIds - row ids the caller found in the ordered patches.
+ * @returns one disable patch per telemetry row the composition carries; empty when none apply.
+ */
+export function resolveTelemetryPatches(
+  disabledEnv: string | undefined,
+  presentRowIds: Iterable<string>,
+): PatchOptions[] {
+  if ((disabledEnv ?? '') === '') return []
+  const present = new Set(presentRowIds)
+  const patches: PatchOptions[] = []
+  for (const id of TELEMETRY_ROW_IDS) {
+    if (present.has(id)) patches.push({ id, disabled: true })
+  }
+  return patches
+}
+
+/**
+ * Resolve the telemetry opt-out switch for the session-log row alone.
  * @param disabledEnv - the raw `DSH_TELEMETRY_DISABLED` value (`undefined` when unset).
  * @param hasRow - whether the composition carries the telemetry row.
  * @returns the disable patch, or `undefined` when no hard-disable patch is required.
  */
 export function resolveTelemetryPatch(disabledEnv: string | undefined, hasRow: boolean): PatchOptions | undefined {
-  if ((disabledEnv ?? '') === '' || !hasRow) return undefined
-  return { id: TELEMETRY_ROW_ID, disabled: true }
+  return resolveTelemetryPatches(disabledEnv, hasRow ? [TELEMETRY_ROW_ID] : [])[0]
 }
 
 /** Read current bundle and user layers with the launch-time overlays.
@@ -68,8 +106,10 @@ export function readProfilePatches(binName: string, context: ProfileContext, ini
     ...(loadOptionalPatches(binName, join(context.home, PROFILE_PATCH_FILENAME)) ?? []),
     ...context.overlays,
   ])
-  const telemetryPatch = resolveTelemetryPatch(context.telemetryDisabledEnv,
-    composeEntries([patches]).some(row => row.id === TELEMETRY_ROW_ID))
-  if (telemetryPatch !== undefined) patches.push(telemetryPatch)
+  // One patch per telemetry row the composed profile actually carries, so the opt-out cannot be
+  // satisfied by disabling a row this composition does not mount while another one keeps exporting.
+  const composed = composeEntries([patches])
+  patches.push(...resolveTelemetryPatches(context.telemetryDisabledEnv,
+    composed.flatMap(entry => entry.id === undefined ? [] : [entry.id])))
   return patches
 }
