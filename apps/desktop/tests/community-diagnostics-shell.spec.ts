@@ -37,7 +37,7 @@ function presentation(overrides: Partial<CommunityDiagnosticsWindowView> = {}): 
       id, label: `Label of ${id}`, state: index === 5 ? 'FAIL' : 'PASS', value: `Value of ${id}`,
       code: index === 5 ? 'E-BACKEND-RPC' : '',
     })),
-    summary: { pass: 10, warn: 0, fail: 1, info: 0 },
+    summary: { pass: 13, warn: 0, fail: 1, info: 0 },
     ...overrides,
   }
 }
@@ -126,7 +126,7 @@ it('hydrates from status() when the first presentation was published before the 
   expect(node('diagnostics').hidden).toBe(false)
   expect(node('diagnostics-title').textContent).toBe('Published early')
   expect(document.querySelectorAll('#rows li')).toHaveLength(COMMUNITY_DIAGNOSTIC_IDS.length)
-  expect(node('summary').textContent).toBe('10 pass · 0 warning · 1 failure · 0 info')
+  expect(node('summary').textContent).toBe('13 pass · 0 warning · 1 failure · 0 info')
   // Hydration is a starting point rather than a freeze: a later push still takes over.
   h.push(presentation({ revision: 5, title: 'Refreshed later' }))
   expect(node('diagnostics-title').textContent).toBe('Refreshed later')

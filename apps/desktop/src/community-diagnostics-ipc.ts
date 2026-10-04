@@ -40,9 +40,11 @@ export const COMMUNITY_DIAGNOSTICS_PRELOAD = 'preload-community-diagnostics.cjs'
  * Recommended content size for the diagnostics window.
  *
  * A utility window rather than a dialog: it blocks nothing, tracks no parent geometry, and holds a
- * fixed list, so one size covers eleven check rows, a summary, and two buttons.
+ * fixed list, so one size covers the check rows, a summary, and two buttons. The height follows the
+ * check count, which grew to fourteen when the version-provenance rows were appended; the list
+ * scrolls if a long value wraps, so the size is a preference rather than a limit.
  */
-export const COMMUNITY_DIAGNOSTICS_WINDOW_SIZE = { width: 640, height: 620 } as const
+export const COMMUNITY_DIAGNOSTICS_WINDOW_SIZE = { width: 640, height: 740 } as const
 
 /** Noun the document prints beside each state's count, in the shell's own language. */
 export interface CommunityDiagnosticsSummaryLabels {

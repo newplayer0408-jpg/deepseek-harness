@@ -23,6 +23,8 @@ import {
 } from 'electron'
 import { resolveDesktopPaths } from './paths.ts'
 import { bootstrapDesktopVariant } from './desktop-variant.ts'
+import { readCommunityVersion } from './community-version.ts'
+import { desktopAboutDetail } from './community-version-presentation.ts'
 import { DesktopProjectManager } from './project-manager.ts'
 import { DesktopHostFatalError, DesktopHostProcess, DesktopHostUncleanExitError } from './host-process.ts'
 import { DesktopPlatformView, PLATFORM_IPC, platformBounds } from './platform-view.ts'
@@ -312,7 +314,11 @@ async function main(): Promise<void> {
   // Before anything resolves a Harness path: an isolated variant must not read or write the state a
   // release installation owns, and only a declared variant gets an isolated home. The same bootstrap
   // seeds the telemetry default a community build carries into the Host child process it starts.
-  await bootstrapDesktopVariant({ appPath: app.getAppPath() })
+  const desktopVariant = await bootstrapDesktopVariant({ appPath: app.getAppPath() })
+  // The fork's own version facts, read once for the surfaces that report them. A build that does not
+  // declare the community variant reads nothing here, so a release keeps its own version line and
+  // can never display community metadata even if the file were left beside it.
+  const communityVersion = await readCommunityVersion({ appPath: app.getAppPath(), variant: desktopVariant })
   void pruneCrashReports(app.getPath('logs'))
   const journalDirectory = process.env.DSH_DESKTOP_UPDATE_JOURNAL_DIR
   const updateJournal = journalDirectory === undefined ? undefined : new DesktopUpdateJournal(journalDirectory, app.getVersion())
@@ -371,7 +377,7 @@ async function main(): Promise<void> {
   // chrome and its content never mix languages.
   const showAbout = async (): Promise<void> => {
     await ordinaryMessageBox({ type: 'info', title: locale.messages.aboutMenu, message: locale.messages.aboutProduct,
-      detail: formatDesktopMessage(locale.messages.aboutVersion, { version: app.getVersion() }),
+      detail: desktopAboutDetail(locale.messages, { build: app.getVersion(), community: communityVersion }),
       buttons: [locale.messages.updateAcknowledge], cancelId: 0 })
   }
   const appPreload = fileURLToPath(new URL('./preload-app.cjs', import.meta.url))

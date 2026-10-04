@@ -176,6 +176,11 @@ export function createElectronBuilderConfig(
       'lib/preload-welcome.cjs',
       'renderer/**/*',
       'package.json',
+      // The fork's own version facts travel beside the manifest, because the shell reads them from
+      // the application path at runtime rather than importing them. Shipping the file to every
+      // variant is deliberate: the reader gates on the declared variant, so a release carries the
+      // file and still reports no community metadata.
+      'community-version.json',
       { from: buildPaths.dsh, to: 'dsh', filter: ['**/*'] },
       // electron-builder excludes a source directory's root node_modules.
       { from: join(buildPaths.dsh, 'node_modules'), to: 'dsh/node_modules', filter: ['**/*'] },

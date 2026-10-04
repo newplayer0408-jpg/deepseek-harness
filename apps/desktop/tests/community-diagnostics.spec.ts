@@ -85,6 +85,12 @@ function healthy(overrides: Partial<CommunityDiagnosticsInput> = {}): CommunityD
     variant: DESKTOP_COMMUNITY_VARIANT,
     appId: 'com.deepseek.dsh.community',
     appVersion: '0.1.7-rc.2',
+    // The fork's own version facts, as a community installation whose metadata file reads declares
+    // them. They are a second, independent series: the application version above stays the upstream
+    // package or build version, and these name the fork's release and the base it was synced to.
+    communityVersion: 'v0.2-dev',
+    upstreamBase: 'dsh-v0.1.7-rc.2',
+    upstreamCommit: '477b4f420553e8a52c2fbccc464d7561b239c443',
     locale: 'zh-CN',
     paths: { home: HOME, homeDisplay: '~/.dsh-community' },
     resources: {
@@ -543,7 +549,7 @@ describe('the collected view', () => {
     expect(view.checks.map(entry => entry.id)).toEqual([...COMMUNITY_DIAGNOSTIC_IDS])
     expect(view.checks.every(entry => entry.value !== '')).toBe(true)
     expect(view.checks.every(entry => entry.state === 'PASS' || entry.state === 'INFO')).toBe(true)
-    expect(view.reportVersion).toBe(1)
+    expect(view.reportVersion).toBe(2)
     expect(view.generated).toBe('2026-09-26T02:00:00.000Z')
     expect(view.bundledDsh).toBe('0.1.7-rc.2')
     expect(view.platform).toBe('win32 10.0.26100 (x64)')
@@ -579,5 +585,64 @@ describe('the collected view', () => {
   it('renders an unusable locale as unknown rather than as its raw value', async () => {
     const view = await collect({ locale: 'not a locale' })
     expect(view.locale).toBe('unknown')
+  })
+})
+
+/**
+ * The fork versions itself on its own series, so a report has to be able to name that version and the
+ * upstream base it was synced to without either being confused with the version the application
+ * reports. These cases pin the three facts, the two ways each can be unavailable, and the gates that
+ * keep a hostile value out of the view.
+ */
+describe('version provenance', () => {
+  /** The three ids, in report order, so a case can assert all of them at once. */
+  const IDS = ['community-version', 'upstream-base', 'upstream-commit'] as const
+
+  it('reports the fork version, the upstream base tag, and the commit that base named', async () => {
+    const view = await collect()
+    expect(check(view, 'community-version').value).toBe('v0.2-dev')
+    expect(check(view, 'upstream-base').value).toBe('dsh-v0.1.7-rc.2')
+    expect(check(view, 'upstream-commit').value).toBe('477b4f420553e8a52c2fbccc464d7561b239c443')
+    for (const id of IDS) {
+      expect(check(view, id).state).toBe('PASS')
+      expect(check(view, id).code).toBeUndefined()
+    }
+  })
+
+  it('keeps the community version apart from the version the application reports', async () => {
+    const view = await collect({ appVersion: '0.1.7-rc.2.20261004.1' })
+    expect(check(view, 'application-version').value).toBe('0.1.7-rc.2.20261004.1')
+    expect(view.appVersion).toBe('0.1.7-rc.2.20261004.1')
+    expect(check(view, 'community-version').value).toBe('v0.2-dev')
+  })
+
+  it('warns, one code each, when a community build declares no version facts', async () => {
+    // The three facts are removed rather than set to undefined: an installation whose metadata file
+    // did not read declares none of them, and that absence is what the collector is handed.
+    const { communityVersion: _version, upstreamBase: _base, upstreamCommit: _commit, ...withoutFacts } = healthy()
+    const view = await collectCommunityDiagnostics(withoutFacts)
+    expect(check(view, 'community-version')).toMatchObject({ state: 'WARN', value: 'unknown', code: COMMUNITY_DIAGNOSTIC_CODES.communityVersionMissing })
+    expect(check(view, 'upstream-base')).toMatchObject({ state: 'WARN', value: 'unknown', code: COMMUNITY_DIAGNOSTIC_CODES.upstreamBaseMissing })
+    expect(check(view, 'upstream-commit')).toMatchObject({ state: 'WARN', value: 'unknown', code: COMMUNITY_DIAGNOSTIC_CODES.upstreamCommitMissing })
+  })
+
+  it('reports each fact as inapplicable on a build that is not the community variant', async () => {
+    for (const variant of [DESKTOP_PRODUCTION_VARIANT, DESKTOP_DEV_VARIANT] as const) {
+      const view = await collect({ variant })
+      for (const id of IDS) {
+        expect(check(view, id)).toMatchObject({ state: 'INFO', value: 'not a community build' })
+        expect(check(view, id).code).toBeUndefined()
+      }
+    }
+  })
+
+  it('renders a value outside its shape as unknown rather than as itself', async () => {
+    const view = await collect({
+      communityVersion: 'sk-test-THIS-MUST-NOT-LEAK',
+      upstreamBase: 'C:\\Users\\secret-user\\base',
+      upstreamCommit: 'Bearer super-secret-token',
+    })
+    for (const id of IDS) expect(check(view, id).state).toBe('WARN')
+    expect(JSON.stringify(view)).not.toMatch(/sk-test|super-secret|secret-user|[A-Za-z]:[\\/]/u)
   })
 })

@@ -10,9 +10,15 @@
 # unsigned build keeps its variant's identity; the `community` variant is what separates this binary
 # from a DeepSeek release, and this workflow never selects any other variant.
 #
-# Manual only, with no tag trigger: a dispatch cannot create a public version tag, and the version
-# this build publishes comes from `apps/desktop/package.json` alone. The `publish` input is false by
-# default, so a first iteration exercises the build lane and nothing else.
+# Manual only, with no tag trigger: no push, tag, or schedule can start a run. The `publish` input is
+# false by default, so a first iteration exercises the build lane and nothing else.
+#
+# Two versions meet here and are deliberately kept apart. The installer is named after the version it
+# packages, which is upstream's (`apps/desktop/package.json`) plus the build stamp the packaging adds;
+# the release tag and the release title are named after the fork's own community version, read from
+# `apps/desktop/community-version.json`, the single source of truth the About surface and the
+# diagnostics report share. A fork release therefore never re-versions upstream's packages, and its
+# tag never claims upstream's series.
 name: Release (desktop community)
 
 on:
@@ -45,11 +51,42 @@ jobs:
     name: Build community installer (win-x64)
     runs-on: windows-latest
     timeout-minutes: 120
+    outputs:
+      # The fork's own product version and the upstream base it was synced to, read here because this
+      # is the job with a checkout. The publish lane holds none, so it can neither discover a different
+      # value nor read the repository at all.
+      community_version: ${{ steps.community-version.outputs.version }}
+      upstream_base: ${{ steps.community-version.outputs.upstream_base }}
+      upstream_commit: ${{ steps.community-version.outputs.upstream_commit }}
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
           clean: true
+
+      # The community version is validated before anything is built, so a malformed metadata file
+      # stops the run instead of producing an installer that cannot be published under a name the
+      # repository agrees with. The checks mirror the shell's own reader, which is what keeps one
+      # value usable by the application, by this workflow, and by the release notes.
+      - name: Read the community version
+        id: community-version
+        shell: pwsh
+        run: |
+          $json = Get-Content apps/desktop/community-version.json -Raw | ConvertFrom-Json
+          $version = [string]$json.communityVersion
+          if ($version -notmatch '^\d{1,4}(\.\d{1,5}){0,2}(-[A-Za-z0-9.]{1,32})?$') {
+            throw "community-version.json declares an unusable communityVersion: '$version'"
+          }
+          if ([string]$json.upstreamBase -notmatch '^dsh-v\d') {
+            throw "community-version.json declares an unusable upstreamBase: '$($json.upstreamBase)'"
+          }
+          if ([string]$json.upstreamCommit -notmatch '^[0-9a-f]{40}$') {
+            throw "community-version.json declares an unusable upstreamCommit: '$($json.upstreamCommit)'"
+          }
+          Write-Output "community version v$version, based on $($json.upstreamBase) at $($json.upstreamCommit)"
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "upstream_base=$($json.upstreamBase)" >> $env:GITHUB_OUTPUT
+          "upstream_commit=$($json.upstreamCommit)" >> $env:GITHUB_OUTPUT
 
       # The bundled runtime's native modules are built here, and pnpm's store is linked rather than
       # copied, which needs symlink support on the hosted runner.
@@ -114,6 +151,9 @@ jobs:
       - name: Verify the community installer
         shell: pwsh
         run: |
+          # The artifact name carries the version the installer packages — upstream's, or the build
+          # stamp derived from it — while the release tag carries the community version read above.
+          # This step pins the artifact name alone.
           $version = (Get-Content apps/desktop/package.json -Raw | ConvertFrom-Json).version
           $root = '.dsh-build/win-x64-community'
           $expected = "deepseek-harness-$version-win-x64-community-unsigned.exe"
@@ -191,13 +231,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          COMMUNITY_VERSION: ${{ needs.build.outputs.community_version }}
+          UPSTREAM_BASE: ${{ needs.build.outputs.upstream_base }}
+          UPSTREAM_COMMIT: ${{ needs.build.outputs.upstream_commit }}
         run: |
           set -euo pipefail
-          # The version is read back from the artifact name the build produced, so this lane never
-          # reads the repository's contents and cannot disagree with what it publishes.
+          # The packaged version is read back from the artifact name the build produced, so this lane
+          # never reads the repository's contents. The community version comes from the build job's
+          # output instead of being read here, for the same reason.
           installer=$(basename "$(ls dist/*-community-unsigned.exe)")
-          version=${installer#deepseek-harness-}
-          version=${version%-win-x64-community-unsigned.exe}
+          packaged=${installer#deepseek-harness-}
+          packaged=${packaged%-win-x64-community-unsigned.exe}
           hash=$(sha256sum "dist/$installer" | cut -d' ' -f1)
           cat > notes.md <<'NOTES'
           Unofficial community build of DeepSeek Harness. This project and its binary releases are not published, endorsed, or supported by DeepSeek. Based on the open-source DeepSeek Harness project.
@@ -210,13 +254,15 @@ jobs:
           NOTES
           cat >> notes.md <<NOTES
 
-          - Installer: \`$installer\`
+          - Community version: \`v$COMMUNITY_VERSION\`
+          - Upstream base: \`$UPSTREAM_BASE\` ($UPSTREAM_COMMIT)
+          - Installer: \`$installer\` (packages $packaged)
           - SHA-256: \`$hash\`
           - Source: \`${{ github.sha }}\`
           NOTES
           cat notes.md
-          gh release create "community-v$version" "dist/$installer" \
+          gh release create "community-v$COMMUNITY_VERSION" "dist/$installer" \
             --target "${{ github.sha }}" \
-            --title "DeepSeek Harness Community $version (unofficial, unsigned)" \
+            --title "DeepSeek Harness Community v$COMMUNITY_VERSION (unofficial, unsigned)" \
             --notes-file notes.md \
             --prerelease

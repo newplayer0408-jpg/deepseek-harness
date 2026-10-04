@@ -36,17 +36,28 @@ import {
 } from '@deepseek-ai/dsh-home-paths'
 import { DESKTOP_COMMUNITY_VARIANT, type DesktopVariant } from './desktop-variant.ts'
 
-/** Report format version; bumped only when the field set or a line syntax changes. */
-export const COMMUNITY_DIAGNOSTICS_REPORT_VERSION = 1
+/**
+ * Report format version; bumped only when the field set or a line syntax changes.
+ *
+ * Version 2 appended the three community version-provenance checks, so one installation now reports
+ * a different set of lines than version 1 produced. No header field, no line syntax, and no earlier
+ * check changed with it.
+ */
+export const COMMUNITY_DIAGNOSTICS_REPORT_VERSION = 2
 
 /** Placeholder for a fact the collector could not read. */
 const UNKNOWN = 'unknown'
+
+/** Value a build that is not the community variant reports for a fact only a community build declares. */
+const NOT_COMMUNITY = 'not a community build'
 
 /**
  * Check ids in report order.
  *
  * The order is part of the contract: two reports of the same installation must diff cleanly, so a
- * new check is appended rather than inserted, and the renderer never reorders what it is given.
+ * new check is appended rather than inserted, and the renderer never reorders what it is given. The
+ * three version-provenance checks at the end are the rule's current example: they were appended
+ * together, so every line an earlier report printed kept its position.
  */
 export const COMMUNITY_DIAGNOSTIC_IDS = [
   'community-edition',
@@ -60,6 +71,9 @@ export const COMMUNITY_DIAGNOSTIC_IDS = [
   'updates',
   'telemetry',
   'system',
+  'community-version',
+  'upstream-base',
+  'upstream-commit',
 ] as const
 
 /** Stable identifier of one diagnostic check. */
@@ -121,6 +135,12 @@ export const COMMUNITY_DIAGNOSTIC_CODES = {
   telemetryOverridden: 'E-TELEMETRY-OVERRIDDEN',
   /** No session-log telemetry mode is set at all, which no community build expects. */
   telemetryUnknown: 'E-TELEMETRY-UNKNOWN',
+  /** A community build declared no community version this installation could read. */
+  communityVersionMissing: 'E-COMMUNITY-VERSION-MISSING',
+  /** A community build declared no upstream base this installation could read. */
+  upstreamBaseMissing: 'E-UPSTREAM-BASE-MISSING',
+  /** A community build declared no upstream commit this installation could read. */
+  upstreamCommitMissing: 'E-UPSTREAM-COMMIT-MISSING',
 } as const
 
 /** One stable code from {@link COMMUNITY_DIAGNOSTIC_CODES}. */
@@ -307,7 +327,26 @@ export interface CommunityDiagnosticsInput {
   readonly variant: DesktopVariant
   /** Bundle identifier the manifest declares, when it declares one. */
   readonly appId?: string
+  /**
+   * Version the installed application reports.
+   *
+   * For a packaged build this is the build version the packaging set, and for an unpackaged one the
+   * upstream package version — the two are one value to the running application, and the report
+   * names whichever it is as the application version rather than pretending to know which.
+   */
   readonly appVersion: string
+  /**
+   * Community product version the build declares, in the user-facing `v` form, when it declares one.
+   *
+   * Absent on a build that is not the community variant, and on a community build whose version file
+   * could not be read. The check separates those two by variant rather than by value, so a release
+   * reports the fact as inapplicable and a community build reports it as missing.
+   */
+  readonly communityVersion?: string
+  /** Upstream base tag the build was last synced to, when the build declares one. */
+  readonly upstreamBase?: string
+  /** Commit that declared upstream base named, when the build declares one. */
+  readonly upstreamCommit?: string
   readonly locale: string
   readonly paths: CommunityDiagnosticsPaths
   readonly resources: CommunityDiagnosticsResources
@@ -386,6 +425,19 @@ const SAFE_LABEL = /^[a-z][a-z0-9-]{0,63}$/u
 
 /** A version, a release string, or another numeric-leading build fact. */
 const SAFE_VERSION = /^\d[A-Za-z0-9._+-]{0,63}$/u
+
+/**
+ * A release tag: a short name prefix, then a version that leads with a digit.
+ *
+ * The shape is deliberately narrow rather than merely "not a path". A tag such as `v0.2-dev` or
+ * `dsh-v0.1.7-rc.2` is a prefix plus a version, and a gate that accepted any identifier-shaped token
+ * would let a credential with the same character set through — which is exactly the value a report
+ * must never render.
+ */
+const SAFE_RELEASE = /^(?:[A-Za-z][A-Za-z0-9-]{0,15}-)?v?\d[A-Za-z0-9._+-]{0,47}$/u
+
+/** A full commit hash, or an abbreviated one as a build fact names it. */
+const SAFE_COMMIT = /^[0-9a-f]{7,40}$/u
 
 /** One platform token, as `process.platform` spells one. */
 const SAFE_PLATFORM = /^[A-Za-z][A-Za-z0-9_]{0,31}$/u
@@ -506,6 +558,24 @@ function versionField(value: string): string {
 }
 
 /**
+ * Render a release-shaped fact such as a tag, or the placeholder when it is not one.
+ * @param value - the injected fact, absent when the build declared none.
+ * @returns the single-line fact, or `unknown`.
+ */
+function releaseField(value: string | undefined): string {
+  return value === undefined ? UNKNOWN : gated(value, SAFE_RELEASE, UNKNOWN)
+}
+
+/**
+ * Render a commit hash, or the placeholder when it is not one.
+ * @param value - the injected commit, absent when the build declared none.
+ * @returns the single-line commit, or `unknown`.
+ */
+function commitField(value: string | undefined): string {
+  return value === undefined ? UNKNOWN : gated(value, SAFE_COMMIT, UNKNOWN)
+}
+
+/**
  * Render a locale tag, refusing anything that is not one.
  * @param value - the injected locale.
  * @returns the locale, or `unknown`.
@@ -609,6 +679,59 @@ function applicationVersionCheck(input: CommunityDiagnosticsInput): CommunityDia
   return version === UNKNOWN
     ? { id, state: 'FAIL', value: UNKNOWN, code: COMMUNITY_DIAGNOSTIC_CODES.applicationVersionMissing }
     : { id, state: 'PASS', value: version }
+}
+
+/**
+ * Report the community product version the build declares.
+ *
+ * The fork versions itself on its own series, so this is the version a community user and a community
+ * release note share; the application version beside it stays the upstream package or build version
+ * it has always been. Only a community build declares one, so any other build reports the fact as
+ * inapplicable rather than as missing. For a community build it is required: an installation that
+ * cannot name its own version cannot be matched to a release, which a report should say rather than
+ * pass over.
+ * @param input - the collector input.
+ * @returns the community-version check.
+ */
+function communityVersionCheck(input: CommunityDiagnosticsInput): CommunityDiagnosticCheck {
+  const id = 'community-version'
+  if (input.variant !== DESKTOP_COMMUNITY_VARIANT) return { id, state: 'INFO', value: NOT_COMMUNITY }
+  const version = releaseField(input.communityVersion)
+  return version === UNKNOWN
+    ? { id, state: 'WARN', value: UNKNOWN, code: COMMUNITY_DIAGNOSTIC_CODES.communityVersionMissing }
+    : { id, state: 'PASS', value: version }
+}
+
+/**
+ * Report the upstream base this fork is currently synced to.
+ * @param input - the collector input.
+ * @returns the upstream-base check.
+ */
+function upstreamBaseCheck(input: CommunityDiagnosticsInput): CommunityDiagnosticCheck {
+  const id = 'upstream-base'
+  if (input.variant !== DESKTOP_COMMUNITY_VARIANT) return { id, state: 'INFO', value: NOT_COMMUNITY }
+  const base = releaseField(input.upstreamBase)
+  return base === UNKNOWN
+    ? { id, state: 'WARN', value: UNKNOWN, code: COMMUNITY_DIAGNOSTIC_CODES.upstreamBaseMissing }
+    : { id, state: 'PASS', value: base }
+}
+
+/**
+ * Report the commit the declared upstream base named.
+ *
+ * A base is reported as a tag and as a commit because a tag can be moved: the tag is what a user
+ * recognizes, and the commit is what makes the report reproducible a year later. Folding them into
+ * one line would lose the second property.
+ * @param input - the collector input.
+ * @returns the upstream-commit check.
+ */
+function upstreamCommitCheck(input: CommunityDiagnosticsInput): CommunityDiagnosticCheck {
+  const id = 'upstream-commit'
+  if (input.variant !== DESKTOP_COMMUNITY_VARIANT) return { id, state: 'INFO', value: NOT_COMMUNITY }
+  const commit = commitField(input.upstreamCommit)
+  return commit === UNKNOWN
+    ? { id, state: 'WARN', value: UNKNOWN, code: COMMUNITY_DIAGNOSTIC_CODES.upstreamCommitMissing }
+    : { id, state: 'PASS', value: commit }
 }
 
 /**
@@ -895,6 +1018,11 @@ export async function collectCommunityDiagnostics(input: CommunityDiagnosticsInp
     updatesCheck(input),
     telemetryCheck(input),
     systemCheck(input),
+    // Version provenance is appended rather than placed beside the application version, so every
+    // line an earlier report printed kept its position (see {@link COMMUNITY_DIAGNOSTIC_IDS}).
+    communityVersionCheck(input),
+    upstreamBaseCheck(input),
+    upstreamCommitCheck(input),
   ]
   return {
     reportVersion: COMMUNITY_DIAGNOSTICS_REPORT_VERSION,

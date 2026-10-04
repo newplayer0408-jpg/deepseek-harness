@@ -44,7 +44,7 @@ const CHECKS: readonly CommunityDiagnosticCheck[] = [
 /** A collected view, for the cases that exercise the renderer alone. */
 function view(overrides: Partial<CommunityDiagnosticsView> = {}): CommunityDiagnosticsView {
   const base: CommunityDiagnosticsView = {
-    reportVersion: 1,
+    reportVersion: 2,
     generated: '2026-09-26T02:00:00.000Z',
     variant: DESKTOP_COMMUNITY_VARIANT,
     appVersion: '0.1.7-rc.2',
@@ -77,7 +77,7 @@ describe('report format', () => {
   it('renders the header fields, one line per check, and the counts, in one fixed order', () => {
     expect(renderCommunityDiagnosticsReport(view())).toBe([
       'DeepSeek Harness — Community Diagnostics',
-      'report version: 1',
+      'report version: 2',
       'generated: 2026-09-26T02:00:00.000Z',
       'variant: community',
       'app version: 0.1.7-rc.2',
@@ -194,7 +194,12 @@ describe('a report of a broken installation', () => {
     expect(report).toContain('[FAIL] packaged-runtime descriptor missing code=E-RUNTIME-DESCRIPTOR-MISSING\n')
     expect(report).toContain('code=E-PACKAGED-FILE-MISSING')
     expect(report).toContain('code=E-BACKEND-RPC')
-    expect(report).toContain('summary: 3 pass, 3 warn, 3 fail, 2 info\n')
+    // A broken installation reports its own version provenance as unreadable too, which is what tells
+    // a reader that the build cannot name the fork release or the upstream base it came from.
+    expect(report).toContain('[WARN] community-version unknown code=E-COMMUNITY-VERSION-MISSING\n')
+    expect(report).toContain('[WARN] upstream-base unknown code=E-UPSTREAM-BASE-MISSING\n')
+    expect(report).toContain('[WARN] upstream-commit unknown code=E-UPSTREAM-COMMIT-MISSING\n')
+    expect(report).toContain('summary: 3 pass, 6 warn, 3 fail, 2 info\n')
     for (const message of ['ENOENT', 'EBUSY', 'EPERM', 'rpc exploded', 'Temp', 'not created yet']) {
       expect(report).not.toContain(message)
     }
