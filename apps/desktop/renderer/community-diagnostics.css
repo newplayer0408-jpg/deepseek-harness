@@ -1,0 +1,35 @@
+/* Community Diagnostics: an ordinary utility window in the Desktop shell's own visual language. */
+:root {
+  color-scheme: light;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+  color: #0f1115;
+  background: #fff;
+}
+* { box-sizing: border-box; }
+body { margin: 0; height: 100vh; }
+main { display: flex; flex-direction: column; gap: 14px; height: 100%; padding: 20px 24px 20px; }
+header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+h1 { margin: 0; font-size: 16px; font-weight: 500; line-height: 24px; overflow-wrap: anywhere; }
+button { min-height: 32px; padding: 5px 14px; border: 0; border-radius: 8px; font-family: inherit; font-size: 13px; font-weight: 500; line-height: 22px; cursor: pointer; }
+button:hover { filter: brightness(0.95); }
+button:focus-visible { outline: 2px solid #4d6bfe; outline-offset: 2px; }
+.primary { background: #0f1115; color: #fff; }
+.secondary { background: #f5f5f5; color: inherit; }
+#rows { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 0; border-top: 1px solid #ececec; list-style: none; }
+#rows li { display: grid; grid-template-columns: 18px minmax(110px, max-content) 1fr auto; align-items: baseline; gap: 10px; padding: 9px 2px; border-bottom: 1px solid #f4f4f4; font-size: 13px; line-height: 20px; }
+.state { font-family: monospace; font-size: 14px; text-align: center; }
+.row-label { color: #0f1115; }
+.row-value { color: #5b6472; overflow-wrap: anywhere; }
+.row-code { font: 11px/18px monospace; color: #b3261e; }
+/* The state word a screen reader announces: it stays in the document but out of the layout, so the
+   four-column row above is unchanged and the glyph stays the only visible state signal. */
+.visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.state-PASS { color: #167c3c; }
+.state-WARN { color: #a35f00; }
+.state-FAIL { color: #b3261e; }
+.state-INFO { color: #5b6472; }
+#summary { margin: 0; font-size: 13px; line-height: 20px; color: #5b6472; }
+#unavailable { margin: 0; padding: 14px; border-radius: 8px; background: #fff4f4; color: #b3261e; font-size: 13px; line-height: 20px; overflow-wrap: anywhere; }
+footer { display: flex; align-items: center; gap: 12px; }
+#copied { font-size: 12px; line-height: 18px; color: #5b6472; }
+[hidden] { display: none !important; }

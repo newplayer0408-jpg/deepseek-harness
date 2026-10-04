@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'none'; img-src 'self'">
+    <title></title>
+    <link rel="stylesheet" href="community-diagnostics.css">
+  </head>
+  <body class="community-diagnostics">
+    <main id="diagnostics" hidden>
+      <header>
+        <h1 id="diagnostics-title"></h1>
+        <button id="refresh" class="secondary" type="button"></button>
+      </header>
+      <p id="unavailable" role="alert" hidden></p>
+      <ul id="rows"></ul>
+      <p id="summary"></p>
+      <footer>
+        <button id="copy-report" class="primary" type="button"></button>
+        <span id="copied" role="status" aria-live="polite"></span>
+      </footer>
+    </main>
+    <script src="community-diagnostics.js"></script>
+  </body>
+</html>

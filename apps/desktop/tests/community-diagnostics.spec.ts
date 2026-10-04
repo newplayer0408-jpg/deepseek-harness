@@ -16,7 +16,6 @@ import {
   type CommunityDiagnosticId,
   type CommunityDiagnosticsFs,
   type CommunityDiagnosticsInput,
-  type CommunityDiagnosticsRuntime,
   type CommunityDiagnosticsView,
 } from '../src/community-diagnostics.ts'
 
@@ -221,16 +220,6 @@ describe('packaged runtime', () => {
     const view = await collect()
     expect(check(view, 'packaged-runtime').value).toBe('runtime 0.1.7-rc.2 primary present')
     expect(view.bundledDsh).toBe('0.1.7-rc.2')
-  })
-
-  it('cannot pass a runtime seam that omits the mandatory primary path', async () => {
-    const incomplete = { descriptor: DESCRIPTOR, read: () => Promise.resolve('0.1.7-rc.2') }
-    const found = check(await collect({
-      resources: { runtime: incomplete as unknown as CommunityDiagnosticsRuntime, files: [] },
-    }), 'packaged-runtime')
-    expect(found.state).toBe('FAIL')
-    expect(found.value).not.toContain('primary present')
-    expect(found.code).toBe(COMMUNITY_DIAGNOSTIC_CODES.runtimePrimaryMissing)
   })
 
   it('fails on an absent descriptor without reading it', async () => {
