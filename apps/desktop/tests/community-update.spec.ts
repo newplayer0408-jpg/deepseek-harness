@@ -14,6 +14,9 @@ import {
   COMMUNITY_UPDATE_CHANNEL_DEVELOPMENT,
   COMMUNITY_UPDATE_CHANNEL_RELEASE,
   communityUpdateChannel,
+  compareCommunityVersions,
+  isCommunityUpdateAvailable,
+  parseCommunityVersion,
   resolveCommunityUpdateSurfaces,
 } from '../src/community-update.ts'
 import { communityVariantArguments, isCommunityArguments } from '../src/community-variant-argument.ts'
@@ -95,5 +98,101 @@ describe('the renderer marker', () => {
 
   it('cannot be forged by a longer argument that merely contains it', () => {
     expect(isCommunityArguments(['--dsh-desktop-variant=community-not'])).toBe(false)
+  })
+})
+
+/**
+ * The version semantics one Community release line has, and the four answers a check can reach.
+ *
+ * These cases exist because the alternative — comparing version strings — is wrong in ways that look
+ * right: `'0.10' < '0.9'` as text, and `'0.2'` versus `'0.2-dev'` has no textual meaning at all. The
+ * table below is written from the user's side rather than from the implementation's: what a build
+ * *should* be told, for each pair of versions a release could actually produce.
+ */
+describe('ordering two community versions', () => {
+  /** One comparison, as the sign the comparator reports. */
+  function order(left: string, right: string): number {
+    const a = parseCommunityVersion(left)
+    const b = parseCommunityVersion(right)
+    if (a === undefined || b === undefined) throw new Error(`unparseable version: ${left} / ${right}`)
+    return Math.sign(compareCommunityVersions(a, b))
+  }
+
+  it('orders by major, then minor, then patch, and not as text', () => {
+    expect(order('0.2', '0.3')).toBe(-1)
+    expect(order('0.3', '0.3')).toBe(0)
+    expect(order('0.3', '0.2')).toBe(1)
+    // The case a string comparison gets backwards: ten is greater than nine.
+    expect(order('0.10', '0.9')).toBe(1)
+    expect(order('1.0', '0.99')).toBe(1)
+    expect(order('0.2.1', '0.2.2')).toBe(-1)
+    // A version with no patch is the same release as one that names a zero patch.
+    expect(order('0.2', '0.2.0')).toBe(0)
+  })
+
+  it('reads a version with or without a leading v, and refuses one it cannot order', () => {
+    expect(parseCommunityVersion('v0.2')).toEqual({ major: 0, minor: 2, patch: 0, prerelease: [] })
+    expect(parseCommunityVersion('0.2')).toEqual(parseCommunityVersion('v0.2'))
+    // The parser trims before it matches, so a padded value is the version it names rather than a
+    // parse failure the caller would have to handle differently.
+    expect(parseCommunityVersion(' 0.2 ')).toEqual(parseCommunityVersion('0.2'))
+    for (const value of ['', 'latest', '0.2.0.0.0', 'v', 'x0.2', 'v0.2.0-', '0.2-']) {
+      expect(parseCommunityVersion(value), value).toBeUndefined()
+    }
+  })
+
+  it('ranks a release above any prerelease of the same version, and a numeric identifier below an alphabetic one', () => {
+    expect(order('0.2', '0.2-dev')).toBe(1)
+    expect(order('0.2-dev', '0.2')).toBe(-1)
+    expect(order('0.3-rc.1', '0.3-rc.2')).toBe(-1)
+    // SemVer's own rule, and the one a hand-written comparator usually gets wrong.
+    expect(order('0.3-rc.2', '0.3-rc.10')).toBe(-1)
+    expect(order('0.3-1', '0.3-alpha')).toBe(-1)
+    // A shorter list that is a prefix of a longer one ranks first.
+    expect(order('0.3-rc', '0.3-rc.1')).toBe(-1)
+  })
+})
+
+describe('whether a checked version is an update worth offering', () => {
+  it('offers a newer release to a build on the release line', () => {
+    expect(isCommunityUpdateAvailable('v0.2', '0.3')).toBe(true)
+    expect(isCommunityUpdateAvailable('v0.2', '0.2.1')).toBe(true)
+  })
+
+  it('treats a build already on the checked version, and an older one, as up to date', () => {
+    expect(isCommunityUpdateAvailable('v0.2', '0.2')).toBe(false)
+    expect(isCommunityUpdateAvailable('v0.3', '0.2')).toBe(false)
+    expect(isCommunityUpdateAvailable('v0.3', '0.2.9')).toBe(false)
+  })
+
+  it('never offers a prerelease to a build on the release line', () => {
+    for (const remote of ['0.4-rc.1', '0.3-dev', '0.3-beta.2']) {
+      expect(isCommunityUpdateAvailable('v0.2', remote), remote).toBe(false)
+    }
+  })
+
+  it('never replaces a development build with a release, however much newer the release is', () => {
+    // The conservative half of the rule: a user on the development line asked for the development
+    // line, so a released installer is not silently substituted for it even when it is newer.
+    expect(isCommunityUpdateAvailable('v0.2-dev', '0.3')).toBe(false)
+    expect(isCommunityUpdateAvailable('v0.2-dev', '0.4')).toBe(false)
+    // The rule is symmetric, so a release build is not handed a prerelease either.
+    expect(isCommunityUpdateAvailable('v0.2', '0.3-dev')).toBe(false)
+  })
+
+  it('would offer a newer development build, and no published channel can deliver one yet', () => {
+    // The comparison itself is line-relative, so two development versions are ordered normally. The
+    // reason this is not reachable today is the manifest: it exists only for the stable channel and
+    // refuses a prerelease version outright, which is pinned in the manifest and service specs.
+    expect(isCommunityUpdateAvailable('v0.2-dev', '0.3-dev')).toBe(true)
+    expect(isCommunityUpdateAvailable('v0.3-dev', '0.2-dev')).toBe(false)
+    expect(isCommunityUpdateAvailable('v0.2-dev', 'v0.2-dev')).toBe(false)
+  })
+
+  it('refuses to answer when either version is one it cannot order', () => {
+    // Guessing here is what would turn a malformed manifest into an offered upgrade.
+    for (const [local, remote] of [['v0.2', 'latest'], ['latest', '0.3'], ['v0.2', ''], ['', '0.3']] as const) {
+      expect(isCommunityUpdateAvailable(local, remote), `${local} / ${remote}`).toBe(false)
+    }
   })
 })
