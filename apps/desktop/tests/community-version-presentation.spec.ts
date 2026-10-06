@@ -7,17 +7,30 @@
  * community build must name the fork's version without losing the build it packages, and the wording
  * must come from the locale dictionary rather than from this module — a hardcoded line would pass an
  * English-only assertion and ship a Chinese user an English dialog.
+ *
+ * The commit line has a fourth direction of its own: the base tag is what the fork commits, and the
+ * commit is derived from it when a build runs, so a build that resolved none renders three lines
+ * rather than a fourth line naming nothing.
  */
 import { describe, expect, it } from 'vitest'
 import type { CommunityVersionIdentity } from '../src/community-version.ts'
 import { desktopAboutDetail, type DesktopAboutVersions } from '../src/community-version-presentation.ts'
 import { en, zh } from '../src/locale.ts'
 
-/** The facts a community build reads from its own metadata file. */
+/** A commit a packaging run recorded: shaped like one, and belonging to no repository object. */
+const RECORDED_COMMIT = 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4'
+
+/** The facts a community build reports, including the commit its packaging run recorded. */
 const COMMUNITY: CommunityVersionIdentity = {
   version: 'v0.2-dev',
   upstreamBase: 'dsh-v0.1.7-rc.2',
-  upstreamCommit: '477b4f420553e8a52c2fbccc464d7561b239c443',
+  upstreamCommit: RECORDED_COMMIT,
+}
+
+/** The same facts on a build whose packaging run could not resolve the base tag. */
+const COMMUNITY_WITHOUT_COMMIT: CommunityVersionIdentity = {
+  version: COMMUNITY.version,
+  upstreamBase: COMMUNITY.upstreamBase,
 }
 
 /** The two languages the shell ships, for the cases that must hold in both. */
@@ -45,7 +58,7 @@ describe('the About detail of a build with no community metadata', () => {
       expect(detail.split('\n')).toHaveLength(1)
       expect(detail).not.toContain(COMMUNITY.version)
       expect(detail).not.toContain(COMMUNITY.upstreamBase)
-      expect(detail).not.toContain(COMMUNITY.upstreamCommit)
+      expect(detail).not.toContain(RECORDED_COMMIT)
     }
   })
 })
@@ -55,9 +68,19 @@ describe('the About detail of a community build', () => {
     expect(desktopAboutDetail(en, about({ build: '0.1.7-rc.2.20261004.1' }))).toBe([
       'Community version v0.2-dev',
       'Upstream base dsh-v0.1.7-rc.2',
-      'Upstream commit 477b4f420553e8a52c2fbccc464d7561b239c443',
+      `Upstream commit ${RECORDED_COMMIT}`,
       'Build 0.1.7-rc.2.20261004.1',
     ].join('\n'))
+  })
+
+  it('leaves the commit line out when the build recorded none, instead of rendering an empty one', () => {
+    const detail = desktopAboutDetail(en, about({ community: COMMUNITY_WITHOUT_COMMIT }))
+    expect(detail.split('\n')).toEqual([
+      'Community version v0.2-dev',
+      'Upstream base dsh-v0.1.7-rc.2',
+      'Build 0.1.7-rc.2',
+    ])
+    expect(detail).not.toContain('Upstream commit')
   })
 
   it('keeps the community version apart from the build the application reports', () => {
@@ -71,10 +94,17 @@ describe('the About detail of a community build', () => {
   it('says the same thing in the shell\'s other language, with every fact intact', () => {
     const detail = desktopAboutDetail(zh, about())
     expect(detail.split('\n')).toHaveLength(4)
-    for (const fact of [COMMUNITY.version, COMMUNITY.upstreamBase, COMMUNITY.upstreamCommit, '0.1.7-rc.2']) {
+    for (const fact of [COMMUNITY.version, COMMUNITY.upstreamBase, RECORDED_COMMIT, '0.1.7-rc.2']) {
       expect(detail).toContain(fact)
     }
     // The English wording is gone, which is what proves the copy came from the dictionary.
     expect(detail).not.toMatch(/Community version|Upstream base|Upstream commit|Build /u)
+  })
+
+  it('drops the same line in the shell\'s other language, keeping every fact that remains', () => {
+    const detail = desktopAboutDetail(zh, about({ community: COMMUNITY_WITHOUT_COMMIT }))
+    expect(detail.split('\n')).toHaveLength(3)
+    for (const fact of [COMMUNITY.version, COMMUNITY.upstreamBase, '0.1.7-rc.2']) expect(detail).toContain(fact)
+    expect(detail).not.toMatch(/Upstream commit/u)
   })
 })

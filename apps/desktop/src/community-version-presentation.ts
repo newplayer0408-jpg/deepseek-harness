@@ -37,9 +37,13 @@ export interface DesktopAboutVersions {
  * Render the About detail text for the build that is running.
  *
  * A release and a development build get the release line alone, unchanged. A community build gets
- * its product version, the upstream base and the commit that base named, and the build it installed,
- * in that order — the provenance a community issue needs, and the facts a comparison against
- * upstream starts from.
+ * its product version, the upstream base tag it was synced to, the commit that tag named when the
+ * build recorded one, and the build it installed, in that order — the four values a community issue
+ * is reported against, and the ones a comparison with upstream starts from.
+ *
+ * The commit line is left out rather than blanked when the build recorded none, because the tag is
+ * what the fork declares and the commit is derived from it: a build that could not resolve the tag
+ * still knows its base, and a line naming nothing would read as a commit it does not have.
  * @param messages - the shell copy for the current UI language.
  * @param versions - the running build version, plus the fork's version facts when it has them.
  * @returns the detail text, one fact per line.
@@ -47,10 +51,11 @@ export interface DesktopAboutVersions {
 export function desktopAboutDetail(messages: DesktopMessages, versions: DesktopAboutVersions): string {
   const community = versions.community
   if (community === undefined) return formatDesktopMessage(messages.aboutVersion, { version: versions.build })
+  const commit = community.upstreamCommit
   return [
     formatDesktopMessage(messages.aboutCommunityVersion, { version: community.version }),
     formatDesktopMessage(messages.aboutUpstreamBase, { version: community.upstreamBase }),
-    formatDesktopMessage(messages.aboutUpstreamCommit, { commit: community.upstreamCommit }),
+    ...commit === undefined ? [] : [formatDesktopMessage(messages.aboutUpstreamCommit, { commit })],
     formatDesktopMessage(messages.aboutBuild, { version: versions.build }),
   ].join('\n')
 }

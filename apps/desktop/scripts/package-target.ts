@@ -18,10 +18,11 @@ import { withMacOSSigningKeychain } from './macos-signing-keychain.mjs'
 import { macOSDownloadEnvironment, resolveMacOSPackageSettings } from './macos-package-settings.mjs'
 import { packagingErrorDetails, packagingStep } from './packaging-step.mjs'
 import { notarizeMacOS } from './notarize-macos.mjs'
-import { resolveMacOSNotarizationEnvironment, resolveDesktopVariant } from './desktop-release-environment.mjs'
+import { resolveMacOSNotarizationEnvironment, resolveDesktopVariant, DESKTOP_COMMUNITY_VARIANT } from './desktop-release-environment.mjs'
 import { DESKTOP_BUILD_VERSION_ENV, resolveDesktopBuildVersion, validateDesktopBuildVersion } from './desktop-build-version.mjs'
 import { suggestDesktopBuildVersion } from './desktop-build-version-discovery.ts'
 import { desktopBuildCommitEnvironment, readDesktopBuildCommit, resolveDesktopBuildCommit } from './desktop-build-commit.mjs'
+import { communityUpstreamCommitEnvironment, readCommunityUpstreamCommit } from './community-upstream-commit.mjs'
 import { requireDesktopToolchain } from './desktop-toolchain-preflight.ts'
 import { withMacOSNotarizationProxy } from './macos-notarization-proxy.ts'
 
@@ -348,6 +349,15 @@ async function main(): Promise<void> {
   process.stdout.write(`desktop package: ${target.name} publishes ${buildVersion}${buildVersion === productVersion ? '' : ` for product version ${productVersion}`}\n`)
   const packaged = readDesktopBuildCommit(REPOSITORY_ROOT)
   Object.assign(environment, desktopBuildCommitEnvironment(packaged))
+  // The commit behind the community version's declared upstream base is derived from this checkout
+  // rather than committed beside the tag, so it is resolved here and carried to the child processes
+  // the way the build commit is. Only a build that claims the community variant resolves one: a
+  // release packaging run writes nothing, and neither its manifest nor its artifacts change. A
+  // checkout that does not hold the tag resolves nothing, which is not a failure — the packaged
+  // application then reports its base without a commit instead of a commit it cannot verify.
+  if (resolveDesktopVariant(environment) === DESKTOP_COMMUNITY_VARIANT) {
+    Object.assign(environment, communityUpstreamCommitEnvironment(readCommunityUpstreamCommit(REPOSITORY_ROOT)))
+  }
   const secrets = Object.entries(environment).filter(([name]) => /KEY|SECRET|TOKEN|PASSWORD|APPLE_ID/iu.test(name)).map(([, value]) => value ?? '')
   const run = createPackagingRun(join(APP_ROOT, '.desktop-build', 'packaging-runs'), {
     target: target.name, unsigned: invocation.unsigned, directory: invocation.directory, prepareOnly: invocation.prepareOnly,

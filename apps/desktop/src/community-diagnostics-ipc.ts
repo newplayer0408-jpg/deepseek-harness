@@ -41,8 +41,9 @@ export const COMMUNITY_DIAGNOSTICS_PRELOAD = 'preload-community-diagnostics.cjs'
  *
  * A utility window rather than a dialog: it blocks nothing, tracks no parent geometry, and holds a
  * fixed list, so one size covers the check rows, a summary, and two buttons. The height follows the
- * check count, which grew to fourteen when the version-provenance rows were appended; the list
- * scrolls if a long value wraps, so the size is a preference rather than a limit.
+ * check count, which grew to fourteen when the community version, upstream base, and upstream commit
+ * rows were appended; the list scrolls if a long value wraps, so the size is a preference rather
+ * than a limit.
  */
 export const COMMUNITY_DIAGNOSTICS_WINDOW_SIZE = { width: 640, height: 740 } as const
 

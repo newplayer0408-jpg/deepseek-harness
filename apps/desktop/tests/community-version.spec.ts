@@ -4,6 +4,11 @@
  * reads nothing at all, and a file that is absent, truncated, or edited into something else answers
  * undefined rather than letting its own text reach a surface that renders it.
  *
+ * The commit behind the declared base is the one fact the file deliberately does not carry. It is
+ * derived from the tag at packaging time and read back from the assembled manifest, so these cases pin
+ * both halves: the file refuses to declare one, and the reader takes one from the manifest only when a
+ * packaging run recorded it.
+ *
  * The case that asserts literal values is deliberate. The file records the upstream base this fork is
  * *currently* synced to, and the tempting mistake is to record the base the next sync targets: a
  * metadata file describing a merge that never happened is worse than no metadata at all. That case and
@@ -13,14 +18,19 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { COMMUNITY_VERSION_FILE, parseCommunityVersion, readCommunityVersion } from '../src/community-version.ts'
+import {
+  COMMUNITY_VERSION_FILE,
+  UPSTREAM_COMMIT_METADATA,
+  parseCommunityVersion,
+  readCommunityVersion,
+} from '../src/community-version.ts'
 import { DESKTOP_COMMUNITY_VARIANT, DESKTOP_DEV_VARIANT, DESKTOP_PRODUCTION_VARIANT, type DesktopVariant } from '../src/desktop-variant.ts'
 
 /** The application directory, which is where the committed file sits. */
 const APP_PATH = fileURLToPath(new URL('../', import.meta.url))
 
-/** A full commit hash, as a case varies one. */
-const COMMIT = 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4'
+/** A commit a packaging run could have derived: shaped like one, and belonging to no repository object. */
+const RECORDED_COMMIT = 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4'
 
 /** A read seam that refuses, so a case can prove the file was never opened at all. */
 function refuseToRead(): Promise<string> {
@@ -32,9 +42,19 @@ function textFile(text: string): (path: string) => Promise<string> {
   return () => Promise.resolve(text)
 }
 
-/** Read whatever one text parses to, the way a build reads the file. */
+/** Read whatever one text parses to, the way a build reads the committed file. */
 function readDeclared(text: string, variant: DesktopVariant = DESKTOP_COMMUNITY_VARIANT): Promise<unknown> {
   return readCommunityVersion({ appPath: APP_PATH, variant, read: textFile(text) })
+}
+
+/** Read one version file and one assembled manifest, the way a packaged build reads both. */
+function readPackaged(declared: string, manifest: string): Promise<unknown> {
+  return readCommunityVersion({
+    appPath: APP_PATH,
+    variant: DESKTOP_COMMUNITY_VARIANT,
+    read: textFile(declared),
+    readManifest: textFile(manifest),
+  })
 }
 
 /**
@@ -42,26 +62,34 @@ function readDeclared(text: string, variant: DesktopVariant = DESKTOP_COMMUNITY_
  *
  * They are deliberately not this fork's own values: a case here exercises the shape gate, and a gate
  * test that fails when the repository is re-synced would be testing the file twice instead of the
- * code once. The file's real contents are asserted where they belong, one case below.
+ * code once. The file's real contents are asserted where they belong, in the cases above.
  */
 const FIELDS = {
   communityVersion: '9.9-dev',
   upstreamBase: 'dsh-v9.9.9-rc.1',
-  upstreamCommit: COMMIT,
 } as const
 
+/** Those fields as the committed file would store them. */
+const DECLARED_TEXT = JSON.stringify(FIELDS)
+
 describe('the committed version file', () => {
-  it('declares exactly the three facts a community build reports', () => {
+  it('declares exactly the two facts a community build reports', () => {
     const parsed: unknown = JSON.parse(readFileSync(join(APP_PATH, COMMUNITY_VERSION_FILE), 'utf8'))
-    expect(Object.keys(parsed as object).sort()).toEqual(['communityVersion', 'upstreamBase', 'upstreamCommit'])
+    expect(Object.keys(parsed as object).sort()).toEqual(['communityVersion', 'upstreamBase'])
   })
 
   it('names the upstream base this fork is synced to today, not the base a later sync targets', () => {
     const parsed: unknown = JSON.parse(readFileSync(join(APP_PATH, COMMUNITY_VERSION_FILE), 'utf8'))
-    expect(parsed).toMatchObject({
-      upstreamBase: 'dsh-v0.2.0-rc.2',
-      upstreamCommit: '639ed015397290b3745d163aafe02ffee4aa3f84',
-    })
+    expect(parsed).toMatchObject({ upstreamBase: 'dsh-v0.2.0-rc.2' })
+  })
+
+  it('records no commit, because a hash committed beside a tag stops describing it', () => {
+    const parsed: unknown = JSON.parse(readFileSync(join(APP_PATH, COMMUNITY_VERSION_FILE), 'utf8'))
+    // The commit is derived from the tag when a build runs, so no case may pin one either: a hash here
+    // would be the repository reference the design removes, and it would rot the first time the tag
+    // moved or the history was rewritten.
+    expect(Object.keys(parsed as object)).not.toContain('upstreamCommit')
+    expect(Object.keys(parsed as object)).not.toContain(UPSTREAM_COMMIT_METADATA)
   })
 
   it('passes its own gate on disk, and the runtime reader resolves the same identity', async () => {
@@ -101,7 +129,6 @@ describe('the shape gate every declared fact passes', () => {
     expect(parseCommunityVersion(FIELDS)).toEqual({
       version: `v${FIELDS.communityVersion}`,
       upstreamBase: FIELDS.upstreamBase,
-      upstreamCommit: FIELDS.upstreamCommit,
     })
   })
 
@@ -127,11 +154,11 @@ describe('the shape gate every declared fact passes', () => {
     }
   })
 
-  it('refuses a commit that is not a full lowercase hash, so the base stays reproducible', () => {
-    const refused = ['', COMMIT.slice(0, 8), COMMIT.toUpperCase(), 'z'.repeat(40), `${COMMIT}0`,
-      'Bearer super-secret-token']
-    for (const upstreamCommit of refused) {
-      expect(parseCommunityVersion({ ...FIELDS, upstreamCommit })).toBeUndefined()
+  it('refuses a file that declares a commit, under either the retired or the manifest name', () => {
+    // A commit is derived from the tag, never declared, so a file that carries one is a shape this
+    // reader must not accept — whatever the value — or the stale hash would win over the tag.
+    for (const field of ['upstreamCommit', UPSTREAM_COMMIT_METADATA]) {
+      expect(parseCommunityVersion({ ...FIELDS, [field]: RECORDED_COMMIT })).toBeUndefined()
     }
   })
 
@@ -139,14 +166,55 @@ describe('the shape gate every declared fact passes', () => {
     const refused: unknown[] = [
       { ...FIELDS, communityVersion: 2 },
       { ...FIELDS, upstreamBase: null },
-      { ...FIELDS, upstreamCommit: 42 },
       {},
       null,
       undefined,
       [],
       'community-version.json',
-      COMMIT,
+      RECORDED_COMMIT,
     ]
     for (const source of refused) expect(parseCommunityVersion(source)).toBeUndefined()
+  })
+})
+
+describe('the commit a packaging run records', () => {
+  it('reads the commit out of the assembled manifest, beside the version facts it belongs to', async () => {
+    await expect(readPackaged(DECLARED_TEXT, JSON.stringify({ [UPSTREAM_COMMIT_METADATA]: RECORDED_COMMIT })))
+      .resolves.toEqual({
+        version: `v${FIELDS.communityVersion}`,
+        upstreamBase: FIELDS.upstreamBase,
+        upstreamCommit: RECORDED_COMMIT,
+      })
+  })
+
+  it('reports the version and the base without a commit when no packaging run recorded one', async () => {
+    for (const manifest of ['{}', 'null', '[]', '"a string"']) {
+      await expect(readPackaged(DECLARED_TEXT, manifest))
+        .resolves.toEqual({ version: `v${FIELDS.communityVersion}`, upstreamBase: FIELDS.upstreamBase })
+    }
+  })
+
+  it('ignores a recorded value that is not a full lowercase hash, rather than naming it', async () => {
+    const recorded = ['', RECORDED_COMMIT.slice(0, 8), RECORDED_COMMIT.toUpperCase(), 'z'.repeat(40),
+      `${RECORDED_COMMIT}0`, 42, null]
+    for (const value of recorded) {
+      await expect(readPackaged(DECLARED_TEXT, JSON.stringify({ [UPSTREAM_COMMIT_METADATA]: value })))
+        .resolves.toEqual({ version: `v${FIELDS.communityVersion}`, upstreamBase: FIELDS.upstreamBase })
+    }
+  })
+
+  it('still reports the version and the base when the manifest itself cannot be read', async () => {
+    await expect(readCommunityVersion({
+      appPath: APP_PATH,
+      variant: DESKTOP_COMMUNITY_VARIANT,
+      read: textFile(DECLARED_TEXT),
+      readManifest: refuseToRead,
+    })).resolves.toEqual({ version: `v${FIELDS.communityVersion}`, upstreamBase: FIELDS.upstreamBase })
+  })
+
+  it('reports nothing when the version file is unusable, whatever the manifest beside it holds', async () => {
+    const recorded = JSON.stringify({ [UPSTREAM_COMMIT_METADATA]: RECORDED_COMMIT })
+    const unusable = ['', 'not json', '{}', JSON.stringify({ ...FIELDS, upstreamCommit: RECORDED_COMMIT })]
+    for (const declared of unusable) await expect(readPackaged(declared, recorded)).resolves.toBeUndefined()
   })
 })

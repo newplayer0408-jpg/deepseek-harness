@@ -79,6 +79,9 @@ function fsOf(patch: Readonly<Record<string, PresentKind | undefined>> = {}, opt
   return fsListing(merged, options)
 }
 
+/** A commit the report can name, shaped like one and belonging to no repository object. */
+const RECORDED_COMMIT = 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4'
+
 /** A community installation that passes every check, so a case can break exactly one fact. */
 function healthy(overrides: Partial<CommunityDiagnosticsInput> = {}): CommunityDiagnosticsInput {
   const base: CommunityDiagnosticsInput = {
@@ -87,10 +90,11 @@ function healthy(overrides: Partial<CommunityDiagnosticsInput> = {}): CommunityD
     appVersion: '0.1.7-rc.2',
     // The fork's own version facts, as a community installation whose metadata file reads declares
     // them. They are a second, independent series: the application version above stays the upstream
-    // package or build version, and these name the fork's release and the base it was synced to.
+    // package or build version, and these name the fork's release, the base it was synced to, and the
+    // commit a packaging run derived for that base.
     communityVersion: 'v0.2-dev',
     upstreamBase: 'dsh-v0.1.7-rc.2',
-    upstreamCommit: '477b4f420553e8a52c2fbccc464d7561b239c443',
+    upstreamCommit: RECORDED_COMMIT,
     locale: 'zh-CN',
     paths: { home: HOME, homeDisplay: '~/.dsh-community' },
     resources: {
@@ -594,7 +598,7 @@ describe('the collected view', () => {
  * reports. These cases pin the three facts, the two ways each can be unavailable, and the gates that
  * keep a hostile value out of the view.
  */
-describe('version provenance', () => {
+describe('the three version checks', () => {
   /** The three ids, in report order, so a case can assert all of them at once. */
   const IDS = ['community-version', 'upstream-base', 'upstream-commit'] as const
 
@@ -602,7 +606,7 @@ describe('version provenance', () => {
     const view = await collect()
     expect(check(view, 'community-version').value).toBe('v0.2-dev')
     expect(check(view, 'upstream-base').value).toBe('dsh-v0.1.7-rc.2')
-    expect(check(view, 'upstream-commit').value).toBe('477b4f420553e8a52c2fbccc464d7561b239c443')
+    expect(check(view, 'upstream-commit').value).toBe(RECORDED_COMMIT)
     for (const id of IDS) {
       expect(check(view, id).state).toBe('PASS')
       expect(check(view, id).code).toBeUndefined()

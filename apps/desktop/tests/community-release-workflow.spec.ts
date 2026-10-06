@@ -43,9 +43,19 @@ describe('the community release lane', () => {
   })
 
   it('validates the file before building, so a malformed version stops the run', () => {
-    for (const field of ['communityVersion', 'upstreamBase', 'upstreamCommit']) {
+    for (const field of ['communityVersion', 'upstreamBase']) {
       expect(WORKFLOW).toContain(`unusable ${field}`)
     }
+  })
+
+  it('derives the upstream commit from the base tag, because the file records no hash', () => {
+    // A hash committed beside the tag would be a repository reference that drifts with it, so the
+    // workflow resolves the tag in the checkout that holds it — and fetches tags to be able to.
+    expect(WORKFLOW).not.toContain('$json.upstreamCommit')
+    expect(WORKFLOW).toContain('git rev-list -n 1 $base')
+    expect(WORKFLOW).toContain('fetch-tags: true')
+    // The lane fails rather than publishing a release that cannot name the commit it packages.
+    expect(WORKFLOW).toContain('cannot resolve to a commit')
   })
 
   it('names the release tag and the release title from the community version', () => {

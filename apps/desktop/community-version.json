@@ -1,5 +1,4 @@
 {
   "communityVersion": "0.2-dev",
-  "upstreamBase": "dsh-v0.2.0-rc.2",
-  "upstreamCommit": "639ed015397290b3745d163aafe02ffee4aa3f84"
+  "upstreamBase": "dsh-v0.2.0-rc.2"
 }

@@ -18,7 +18,9 @@
 # the release tag and the release title are named after the fork's own community version, read from
 # `apps/desktop/community-version.json`, the single source of truth the About surface and the
 # diagnostics report share. A fork release therefore never re-versions upstream's packages, and its
-# tag never claims upstream's series.
+# tag never claims upstream's series. The commit those notes quote is derived from that base tag in
+# this checkout — the file records the tag, not a hash that would drift with it — and the packaging
+# step derives the same commit into the installer's own manifest.
 name: Release (desktop community)
 
 on:
@@ -63,11 +65,22 @@ jobs:
         with:
           persist-credentials: false
           clean: true
+          # The community version names its upstream base as a tag, and the commit behind that tag is
+          # derived from this checkout rather than committed. A default shallow checkout fetches no
+          # tags, so the tag the release has to resolve would be missing here.
+          fetch-tags: true
 
       # The community version is validated before anything is built, so a malformed metadata file
       # stops the run instead of producing an installer that cannot be published under a name the
       # repository agrees with. The checks mirror the shell's own reader, which is what keeps one
       # value usable by the application, by this workflow, and by the release notes.
+      #
+      # The commit is resolved here rather than read, because the file deliberately does not hold one:
+      # a hash committed beside the tag is a repository reference that drifts the moment the tag moves.
+      # The build derives the same commit through `apps/desktop/scripts/community-upstream-commit.mjs`
+      # and records it in the installer's own manifest, so the release notes and the packaged
+      # application name one value. Unlike the application, which omits a commit it cannot resolve,
+      # this lane fails: a published release has to name what it packages.
       - name: Read the community version
         id: community-version
         shell: pwsh
@@ -77,16 +90,18 @@ jobs:
           if ($version -notmatch '^\d{1,4}(\.\d{1,5}){0,2}(-[A-Za-z0-9.]{1,32})?$') {
             throw "community-version.json declares an unusable communityVersion: '$version'"
           }
-          if ([string]$json.upstreamBase -notmatch '^dsh-v\d') {
-            throw "community-version.json declares an unusable upstreamBase: '$($json.upstreamBase)'"
+          $base = [string]$json.upstreamBase
+          if ($base -notmatch '^dsh-v\d') {
+            throw "community-version.json declares an unusable upstreamBase: '$base'"
           }
-          if ([string]$json.upstreamCommit -notmatch '^[0-9a-f]{40}$') {
-            throw "community-version.json declares an unusable upstreamCommit: '$($json.upstreamCommit)'"
+          $commit = [string](git rev-list -n 1 $base | Select-Object -First 1)
+          if ($LASTEXITCODE -ne 0 -or $commit -notmatch '^[0-9a-f]{40}$') {
+            throw "community-version.json names an upstreamBase this checkout cannot resolve to a commit: '$base'"
           }
-          Write-Output "community version v$version, based on $($json.upstreamBase) at $($json.upstreamCommit)"
+          Write-Output "community version v$version, based on $base at $commit"
           "version=$version" >> $env:GITHUB_OUTPUT
-          "upstream_base=$($json.upstreamBase)" >> $env:GITHUB_OUTPUT
-          "upstream_commit=$($json.upstreamCommit)" >> $env:GITHUB_OUTPUT
+          "upstream_base=$base" >> $env:GITHUB_OUTPUT
+          "upstream_commit=$commit" >> $env:GITHUB_OUTPUT
 
       # The bundled runtime's native modules are built here, and pnpm's store is linked rather than
       # copied, which needs symlink support on the hosted runner.

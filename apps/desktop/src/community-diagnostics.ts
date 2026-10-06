@@ -39,9 +39,9 @@ import { DESKTOP_COMMUNITY_VARIANT, type DesktopVariant } from './desktop-varian
 /**
  * Report format version; bumped only when the field set or a line syntax changes.
  *
- * Version 2 appended the three community version-provenance checks, so one installation now reports
- * a different set of lines than version 1 produced. No header field, no line syntax, and no earlier
- * check changed with it.
+ * Version 2 appended the three version checks — `community-version`, `upstream-base`, and
+ * `upstream-commit` — so one installation now reports a different set of lines than version 1
+ * produced. No header field, no line syntax, and no earlier check changed with it.
  */
 export const COMMUNITY_DIAGNOSTICS_REPORT_VERSION = 2
 
@@ -56,8 +56,8 @@ const NOT_COMMUNITY = 'not a community build'
  *
  * The order is part of the contract: two reports of the same installation must diff cleanly, so a
  * new check is appended rather than inserted, and the renderer never reorders what it is given. The
- * three version-provenance checks at the end are the rule's current example: they were appended
- * together, so every line an earlier report printed kept its position.
+ * three version checks at the end are the rule's current example: they were appended together, so
+ * every line an earlier report printed kept its position.
  */
 export const COMMUNITY_DIAGNOSTIC_IDS = [
   'community-edition',
@@ -345,7 +345,7 @@ export interface CommunityDiagnosticsInput {
   readonly communityVersion?: string
   /** Upstream base tag the build was last synced to, when the build declares one. */
   readonly upstreamBase?: string
-  /** Commit that declared upstream base named, when the build declares one. */
+  /** Commit the declared upstream base named, when the running build recorded one. */
   readonly upstreamCommit?: string
   readonly locale: string
   readonly paths: CommunityDiagnosticsPaths
@@ -1018,8 +1018,8 @@ export async function collectCommunityDiagnostics(input: CommunityDiagnosticsInp
     updatesCheck(input),
     telemetryCheck(input),
     systemCheck(input),
-    // Version provenance is appended rather than placed beside the application version, so every
-    // line an earlier report printed kept its position (see {@link COMMUNITY_DIAGNOSTIC_IDS}).
+    // The three version checks are appended rather than placed beside the application version, so
+    // every line an earlier report printed kept its position (see {@link COMMUNITY_DIAGNOSTIC_IDS}).
     communityVersionCheck(input),
     upstreamBaseCheck(input),
     upstreamCommitCheck(input),

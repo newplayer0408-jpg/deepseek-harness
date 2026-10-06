@@ -27,6 +27,7 @@ import {
   scrubWindowsSigningEnvironment,
 } from './windows-sign.mjs'
 import { resolveDesktopAutoUpdateConfig } from './desktop-auto-update-environment.mjs'
+import { UPSTREAM_COMMIT_METADATA, resolveCommunityUpstreamCommit } from './community-upstream-commit.mjs'
 import { resolveDesktopBuildCommit } from './desktop-build-commit.mjs'
 import { resolveDesktopBuildVersion } from './desktop-build-version.mjs'
 import { resolveDesktopPolicyEnvironment } from './desktop-policy-environment.mjs'
@@ -123,6 +124,12 @@ export function createElectronBuilderConfig(
   const productVersion = JSON.parse(readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8')).version
   const buildVersion = resolveDesktopBuildVersion(env, productVersion)
   const packaged = resolveDesktopBuildCommit(env)
+  // The commit behind the community version's declared upstream base is derived by the packaging
+  // entry and arrives as an environment value, the same way the build commit does — so the
+  // application reads it from its assembled manifest rather than from a hash committed beside the
+  // tag. Only a community build records one: gating on the variant is what keeps an ambient value
+  // from reaching a release manifest, which must stay exactly as it was.
+  const upstreamCommit = variant === DESKTOP_COMMUNITY_VARIANT ? resolveCommunityUpstreamCommit(env) : undefined
   return {
     appId,
     // The registered scheme description is a display name, so it follows the variant for the same
@@ -140,6 +147,7 @@ export function createElectronBuilderConfig(
       ...identity === undefined ? {} : { name: identity.packageName, [DESKTOP_VARIANT_METADATA]: identity.variant },
       ...buildVersion === productVersion ? {} : { version: buildVersion },
       ...packaged === undefined ? {} : { dshBuildCommit: packaged.commit, dshBuildDirty: packaged.dirty },
+      ...upstreamCommit === undefined ? {} : { [UPSTREAM_COMMIT_METADATA]: upstreamCommit },
     },
     productName,
     // Variant and signing status each contribute a suffix, in a fixed order and independent of each

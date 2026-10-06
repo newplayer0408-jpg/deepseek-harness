@@ -194,8 +194,8 @@ describe('a report of a broken installation', () => {
     expect(report).toContain('[FAIL] packaged-runtime descriptor missing code=E-RUNTIME-DESCRIPTOR-MISSING\n')
     expect(report).toContain('code=E-PACKAGED-FILE-MISSING')
     expect(report).toContain('code=E-BACKEND-RPC')
-    // A broken installation reports its own version provenance as unreadable too, which is what tells
-    // a reader that the build cannot name the fork release or the upstream base it came from.
+    // A broken installation cannot name its own version rows either, which is what tells a reader
+    // that the build cannot name the fork release or the upstream base it came from.
     expect(report).toContain('[WARN] community-version unknown code=E-COMMUNITY-VERSION-MISSING\n')
     expect(report).toContain('[WARN] upstream-base unknown code=E-UPSTREAM-BASE-MISSING\n')
     expect(report).toContain('[WARN] upstream-commit unknown code=E-UPSTREAM-COMMIT-MISSING\n')
