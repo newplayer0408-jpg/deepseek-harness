@@ -6,7 +6,7 @@
  * is the SHA-256 — which is also the field that decides whether a downloaded file is ever accepted.
  * So the digest is computed here, from the installer itself, rather than typed into a release note.
  *
- * Three properties shape the rest of the script.
+ * Five properties shape the rest of the script.
  *
  * - **The output is deterministic.** The same installer, version, and publication time produce the
  *   same bytes, so a manifest can be regenerated and compared. The publication time is therefore an
@@ -18,6 +18,14 @@
  * - **It refuses a development version.** A stable manifest names a release, so a fork still on
  *   `0.2-dev` is told to freeze its version first instead of publishing a manifest that says
  *   `stable` about a development build.
+ * - **It publishes only to the fork's own repository.** The committed identity is the URL source, so
+ *   a copied or edited file would otherwise be able to aim every installation at somebody else's
+ *   releases. The value is therefore compared against the pinned repository before any URL is built.
+ * - **The release tag is an input, not a derivation.** `--tag` must name exactly the version the
+ *   committed facts declare, so a run cannot publish a manifest into a release whose name claims a
+ *   different version. Deriving the tag from the version would make the two agree by construction
+ *   and the check vacuous; requiring the operator to state it makes them agree because they were
+ *   compared.
  *
  * The URL shapes below are spelled here as well as in `src/community-release.ts`, for the reason
  * `community-upstream-commit.mjs` spells its field name twice: a build script cannot import the
@@ -36,6 +44,21 @@ const VERSION_FILE = 'community-version.json'
 /** Repository-relative location of the committed release identity. */
 const RELEASE_FILE = 'community-release.json'
 
+/**
+ * The repository this fork publishes Community releases from.
+ *
+ * The committed file is where the URL value comes from, because the packaged application reads the
+ * same file and neither side may hold a second copy of it. This constant is the other half of that
+ * arrangement: it is what the committed value is *checked against*, so a file copied from another
+ * fork, or edited by hand, stops the release instead of aiming every installation somewhere nobody
+ * reviewed. Renaming the fork is therefore a deliberate edit here, not a silent consequence of a
+ * configuration change.
+ */
+export const COMMUNITY_RELEASE_REPOSITORY = 'newplayer0408-jpg/deepseek-harness'
+
+/** Prefix every Community release tag carries, so one is never read as an upstream `dsh-v*` tag. */
+export const COMMUNITY_RELEASE_TAG_PREFIX = 'community-v'
+
 /** Schema version the client reads; the number is a contract, not a default. */
 const SCHEMA_VERSION = 1
 
@@ -44,6 +67,9 @@ const CHANNEL = 'stable'
 
 /** A Community release version: bare, dot-separated, and with no prerelease suffix. */
 const STABLE_VERSION = /^\d{1,4}(?:\.\d{1,5}){0,2}$/u
+
+/** A published Community release tag. A stable manifest is published by a stable release. */
+const RELEASE_TAG = /^community-v\d{1,4}(?:\.\d{1,5}){0,2}$/u
 
 /** An upstream release tag, as upstream names one. */
 const UPSTREAM_BASE = /^dsh-v\d{1,4}(?:\.\d{1,5}){0,2}(?:-[A-Za-z0-9.]{1,32})?$/u
@@ -115,7 +141,7 @@ function readCommitted(file: string): Record<string, unknown> {
  * ones `src/community-release.ts` builds from the same identity, which is the property that keeps a
  * published manifest and the client looking for it from drifting apart.
  */
-type CommittedReader = (file: string) => Record<string, unknown>
+export type CommittedReader = (file: string) => Record<string, unknown>
 
 /**
  * Read one required string field, gated against the shape its source produces.
@@ -134,11 +160,77 @@ function requireField(source: Record<string, unknown>, key: string, pattern: Reg
 }
 
 /**
+ * Read the release version out of the committed version facts.
+ *
+ * A development version has no published form at all, so this refuses it where the reason is still
+ * visible. Every published name — the release tag, the installer asset, the manifest a client
+ * fetches — is derived from this value, so it is the one field that has to be settled first.
+ * @param declared - the parsed version file.
+ * @returns the version without a leading `v`, such as `0.2`.
+ */
+function requireStableVersion(declared: Record<string, unknown>): string {
+  const version = declared.communityVersion
+  if (typeof version !== 'string' || !STABLE_VERSION.test(version)) {
+    throw new Error(`community release manifest: ${VERSION_FILE} must declare a release version; run the Community release freeze first`)
+  }
+  return version
+}
+
+/**
+ * Read the Community version a release may publish, from the committed facts.
+ * @param read - committed-facts reader, replaceable so a spec can freeze a release version.
+ * @returns the version without a leading `v`, such as `0.2`.
+ */
+export function readCommunityReleaseVersion(read: CommittedReader = readCommitted): string {
+  return requireStableVersion(read(VERSION_FILE))
+}
+
+/**
+ * Name the installer asset one Community release publishes.
+ *
+ * The packaged installer is named after the version it *packages*, which is upstream's, so its build
+ * name says nothing about the Community version it ships as. A published release therefore carries
+ * the fork's own name, derived here rather than typed into a workflow, so the manifest, the uploaded
+ * asset, and the release notes cannot name three different files.
+ * @param version - Community version without its leading `v`, already gated as a release version.
+ * @returns the Windows x64 installer asset name.
+ */
+export function communityInstallerAssetName(version: string): string {
+  return `DeepSeek-Harness-Community-v${version}-Windows-x64.exe`
+}
+
+/**
+ * Check the release tag a run intends to publish under.
+ *
+ * Two things are checked, and the second is the one that matters: the tag has to be a Community
+ * release tag at all, and it has to name exactly the version the committed facts declare. A tag that
+ * is well-formed but names a different version would publish a client-visible manifest whose asset
+ * URL points into a release that does not describe it, so it stops the run.
+ * @param version - Community version without its leading `v`.
+ * @param requested - the `--tag` value.
+ * @returns the tag, for building the URLs from.
+ */
+export function resolveCommunityReleaseTag(version: string, requested: string): string {
+  if (!RELEASE_TAG.test(requested)) {
+    throw new Error(`community release manifest: ${JSON.stringify(requested)} is not a Community release tag; it must be ${COMMUNITY_RELEASE_TAG_PREFIX}<version> with no prerelease suffix`)
+  }
+  const expected = `${COMMUNITY_RELEASE_TAG_PREFIX}${version}`
+  if (requested !== expected) {
+    throw new Error(`community release manifest: release tag ${requested} does not name the version ${VERSION_FILE} declares (${expected}); freeze the version or publish under the matching tag`)
+  }
+  return requested
+}
+
+/**
  * Compute the SHA-256 of one file, streaming it.
+ *
+ * Exported because the staging step has to recompute a digest over the file it actually uploads and
+ * compare it against the manifest: two implementations of "the digest of this file" would be two
+ * chances for the published checksum and the published bytes to disagree.
  * @param path - absolute path of the installer.
  * @returns lowercase hexadecimal digest.
  */
-async function sha256OfFile(path: string): Promise<string> {
+export async function sha256OfFile(path: string): Promise<string> {
   const hash = createHash('sha256')
   for await (const chunk of createReadStream(path)) hash.update(chunk as Buffer)
   return hash.digest('hex')
@@ -177,12 +269,13 @@ function resolvePublishedAt(argv: readonly string[], env: NodeJS.ProcessEnv): st
  * Build the manifest for one installer.
  *
  * @param installer - absolute path of the installer to publish.
- * @param options - the published asset name, target, publication time, and optional facts seam.
+ * @param options - the release tag, the published asset name, target, publication time, and optional facts seam.
  * @returns the manifest, ready to be written.
  */
 export async function buildCommunityReleaseManifest(
   installer: string,
   options: {
+    readonly tag: string
     readonly name: string
     readonly target: string
     readonly publishedAt: string
@@ -190,16 +283,17 @@ export async function buildCommunityReleaseManifest(
   },
 ): Promise<CommunityReleaseManifest> {
   const read = options.read ?? readCommitted
-  const version = read(VERSION_FILE)
+  const facts = read(VERSION_FILE)
   const release = read(RELEASE_FILE)
   // A stable manifest must name a release. Publishing one for a development version would tell every
   // client that `0.2-dev` is the stable 0.2, which is the single most damaging thing this script
   // could do, so it stops here instead.
-  if (typeof version.communityVersion !== 'string' || !STABLE_VERSION.test(version.communityVersion)) {
-    throw new Error(`community release manifest: ${VERSION_FILE} must declare a release version; run the Community release freeze first`)
-  }
-  const upstreamBase = requireField(version, 'upstreamBase', UPSTREAM_BASE, VERSION_FILE)
+  const version = requireStableVersion(facts)
+  const upstreamBase = requireField(facts, 'upstreamBase', UPSTREAM_BASE, VERSION_FILE)
   const repository = requireField(release, 'repository', REPOSITORY, RELEASE_FILE)
+  if (repository !== COMMUNITY_RELEASE_REPOSITORY) {
+    throw new Error(`community release manifest: ${RELEASE_FILE} names ${repository}, which is not the repository this fork publishes from (${COMMUNITY_RELEASE_REPOSITORY})`)
+  }
   // The manifest's own file name is the contract a client fetches, so it is validated here as well as
   // at the write: a build that would publish under a name no client looks for stops before it reads
   // the installer, rather than after.
@@ -211,15 +305,19 @@ export async function buildCommunityReleaseManifest(
   if (!ASSET_NAME.test(options.name)) {
     throw new Error('community release manifest: the published asset name must be a plain .exe file name')
   }
-  const tag = `community-v${version.communityVersion}`
-  const assetUrl = `https://github.com/${repository}/releases/download/${tag}/${options.name}`
+  const asset = communityInstallerAssetName(version)
+  if (options.name !== asset) {
+    throw new Error(`community release manifest: version ${version} publishes ${asset}, not ${options.name}; stage the installer under its published name before generating the manifest`)
+  }
+  const tag = resolveCommunityReleaseTag(version, options.tag)
+  const assetUrl = `https://github.com/${repository}/releases/download/${tag}/${asset}`
   const releaseUrl = `https://github.com/${repository}/releases/tag/${tag}`
   const size = statSync(installer).size
   const sha256 = await sha256OfFile(installer)
-  const assets = { [target.arch]: { fileName: options.name, url: assetUrl, sha256, size } }
+  const assets = { [target.arch]: { fileName: asset, url: assetUrl, sha256, size } }
   return {
     schemaVersion: SCHEMA_VERSION,
-    version: version.communityVersion,
+    version,
     channel: CHANNEL,
     publishedAt: options.publishedAt,
     upstreamBase,
@@ -240,8 +338,12 @@ export interface CommunityReleaseManifestRun {
 
 /**
  * Write the manifest for one installer.
+ *
+ * The installer has to be the file that will actually be uploaded, under the name it will be
+ * uploaded as: the digest is computed from what is on disk, and the asset name is checked against the
+ * name this version publishes, so a manifest can never describe a file the release does not carry.
  * @param installer - absolute path of the installer to publish.
- * @param argv - command-line arguments, read for `--out`, `--name`, `--target`, and `--published-at`.
+ * @param argv - command-line arguments, read for `--tag`, `--out`, `--name`, `--target`, and `--published-at`.
  * @param env - process environment, read for `SOURCE_DATE_EPOCH`.
  * @param read - optional seam for the two committed facts files.
  * @returns the manifest and where it was written.
@@ -254,7 +356,12 @@ export async function writeCommunityReleaseManifest(
 ): Promise<CommunityReleaseManifestRun> {
   const release = read(RELEASE_FILE)
   const manifestName = requireField(release, 'manifest', MANIFEST_NAME, RELEASE_FILE)
+  const tag = option(argv, '--tag')
+  if (tag === undefined) {
+    throw new Error('community release manifest: pass --tag community-v<version>, so the manifest names the release it is published in')
+  }
   const manifest = await buildCommunityReleaseManifest(installer, {
+    tag,
     name: option(argv, '--name') ?? basename(installer),
     target: option(argv, '--target') ?? 'win-x64',
     publishedAt: resolvePublishedAt(argv, env),
@@ -270,7 +377,7 @@ if (process.argv[1] !== undefined && import.meta.filename === resolve(process.ar
   const installer = process.argv.slice(2).find(argument => !argument.startsWith('--'))
   if (installer === undefined) {
     console.error('community release manifest: pass the installer to publish, for example')
-    console.error('  pnpm --filter @deepseek-ai/dsh-desktop run community:release:manifest -- <installer.exe> --published-at 2026-10-06T00:00:00Z')
+    console.error('  pnpm --filter @deepseek-ai/dsh-desktop run community:release:manifest <installer.exe> --tag community-v0.2 --published-at 2026-10-06T00:00:00Z')
     process.exitCode = 1
   } else {
     const run = await writeCommunityReleaseManifest(resolve(installer))

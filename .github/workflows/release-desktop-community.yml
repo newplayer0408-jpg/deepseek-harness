@@ -13,21 +13,33 @@
 # Manual only, with no tag trigger: no push, tag, or schedule can start a run. The `publish` input is
 # false by default, so a first iteration exercises the build lane and nothing else.
 #
-# Two versions meet here and are deliberately kept apart. The installer is named after the version it
-# packages, which is upstream's (`apps/desktop/package.json`) plus the build stamp the packaging adds;
-# the release tag and the release title are named after the fork's own community version, read from
-# `apps/desktop/community-version.json`, the single source of truth the About surface and the
-# diagnostics report share. A fork release therefore never re-versions upstream's packages, and its
-# tag never claims upstream's series. The commit those notes quote is derived from that base tag in
-# this checkout — the file records the tag, not a hash that would drift with it — and the packaging
-# step derives the same commit into the installer's own manifest.
+# Three names meet here and are deliberately kept apart. The build produces the installer under the
+# version it packages, which is upstream's (`apps/desktop/package.json`) plus the build stamp the
+# packaging adds. The release is tagged and titled from the fork's own community version
+# (`apps/desktop/community-version.json`, the single source of truth the About surface and the
+# diagnostics report share), and the tag has to name exactly that version, so a fork release never
+# re-versions upstream's packages and never claims upstream's series. What is *published* carries a
+# third name, `DeepSeek-Harness-Community-v<community version>-Windows-x64.exe`, because the manifest
+# a running installation reads has to name the file the release actually serves. The commit those
+# notes quote is derived from the base tag in this checkout — the file records the tag, not a hash
+# that would drift with it — and the packaging step derives the same commit into the installer's own
+# manifest.
+#
+# A release therefore publishes three files, in one order, in the job that has a checkout and a
+# toolchain: the installer under its published name, the update manifest generated from those renamed
+# bytes, and a checksum list for anyone verifying a download by hand. The publish job holds neither
+# the repository nor a toolchain, so it can only re-verify what it was handed and upload it.
 name: Release (desktop community)
 
 on:
   workflow_dispatch:
     inputs:
+      release_tag:
+        description: 'Community release tag to publish under, such as community-v0.2. Must name the version in apps/desktop/community-version.json.'
+        required: true
+        type: string
       publish:
-        description: 'Create a GitHub Release from the built installer'
+        description: 'Create a GitHub Release from the staged assets'
         required: false
         default: false
         type: boolean
@@ -47,6 +59,13 @@ env:
   # workflow variable reaches the application a user installs, which seeds its own telemetry mode
   # from its declared variant.
   DSH_TELEMETRY_DISABLED: '1'
+  # The fork's own release destination and the manifest it publishes there, named once. The packaged
+  # application reads both from `apps/desktop/community-release.json`, and
+  # `apps/desktop/tests/community-release-workflow.spec.ts` compares the two copies, so a release can
+  # neither be published where the client does not look nor point a client at a release this lane did
+  # not publish.
+  COMMUNITY_RELEASE_REPOSITORY: newplayer0408-jpg/deepseek-harness
+  COMMUNITY_RELEASE_MANIFEST: latest-community.json
 
 jobs:
   build:
@@ -60,6 +79,12 @@ jobs:
       community_version: ${{ steps.community-version.outputs.version }}
       upstream_base: ${{ steps.community-version.outputs.upstream_base }}
       upstream_commit: ${{ steps.community-version.outputs.upstream_commit }}
+      # The tag this run checked, so the publish lane publishes what the build lane validated and
+      # cannot pick up a different value for itself.
+      release_tag: ${{ steps.release-tag.outputs.release_tag }}
+      # The version the installer packages, which is upstream's and not part of any published name:
+      # the release notes name it as a fact rather than deriving it from a file name.
+      packaged_version: ${{ steps.installer.outputs.packaged_version }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -102,6 +127,31 @@ jobs:
           "version=$version" >> $env:GITHUB_OUTPUT
           "upstream_base=$base" >> $env:GITHUB_OUTPUT
           "upstream_commit=$commit" >> $env:GITHUB_OUTPUT
+
+      # The tag is the one published name that arrives as operator input instead of as a committed
+      # fact, so it is checked against the version the file declares before anything is built. A
+      # mismatch would publish a manifest whose asset URL points into a release that does not describe
+      # it, and a two-hour build is worth spending only once that is settled. The same rule is
+      # enforced again where the manifest is written, because that step is what a client's fetch
+      # depends on.
+      - name: Validate the release tag
+        id: release-tag
+        shell: pwsh
+        env:
+          # Passed through the environment rather than interpolated into the script below, so an input
+          # can never be read as PowerShell.
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          COMMUNITY_VERSION: ${{ steps.community-version.outputs.version }}
+        run: |
+          if ($env:RELEASE_TAG -notmatch '^community-v\d{1,4}(\.\d{1,5}){0,2}$') {
+            throw "release_tag must be a Community release tag such as community-v0.2, with no prerelease suffix: '$($env:RELEASE_TAG)'"
+          }
+          $expected = "community-v$($env:COMMUNITY_VERSION)"
+          if ($env:RELEASE_TAG -ne $expected) {
+            throw "release_tag $($env:RELEASE_TAG) does not name the version community-version.json declares ($expected); freeze the version or dispatch the matching tag"
+          }
+          Write-Output "publishing as $($env:RELEASE_TAG)"
+          "release_tag=$($env:RELEASE_TAG)" >> $env:GITHUB_OUTPUT
 
       # The bundled runtime's native modules are built here, and pnpm's store is linked rather than
       # copied, which needs symlink support on the hosted runner.
@@ -164,6 +214,7 @@ jobs:
         run: pnpm run package:desktop:win:x64:unsigned
 
       - name: Verify the community installer
+        id: installer
         shell: pwsh
         run: |
           # The artifact name carries the version the installer packages — upstream's, or the build
@@ -199,14 +250,63 @@ jobs:
           Write-Output "sha256: $hash"
           "Community installer ``$($installer.Name)`` ($size MiB), SHA-256 ``$hash``" |
             Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "path=$($installer.FullName)" >> $env:GITHUB_OUTPUT
+          "packaged_version=$version" >> $env:GITHUB_OUTPUT
 
-      # Only the installer: the unpacked application, the blockmap, and the packaging journals stay in
-      # the runner's build tree, where nothing can publish them.
-      - name: Upload the community installer
+      # The three published files, in the order that makes them describe one object. The installer is
+      # renamed to the name it is published under first, because that name is what the manifest's URL
+      # is built from; the digest is taken from the renamed file, because it is a statement about the
+      # bytes that will be downloaded; and the manifest and the checksum list are both written from
+      # that digest. The script then re-reads the staged installer and refuses to finish when the
+      # digest disagrees with the manifest, so a staging step that altered the file fails here instead
+      # of publishing a checksum for something nobody receives.
+      #
+      # The script derives the published name from `apps/desktop/community-version.json` and refuses a
+      # release version that has not been frozen, which is what keeps a development build from ever
+      # producing a manifest that says `stable` about `0.2-dev`.
+      - name: Stage the release assets
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ steps.release-tag.outputs.release_tag }}
+          INSTALLER: ${{ steps.installer.outputs.path }}
+        run: |
+          # The commit's own time, so rerunning the same release regenerates the same manifest bytes.
+          $publishedAt = (git log -1 --format='%cI').Trim()
+          if ($LASTEXITCODE -ne 0 -or $publishedAt -eq '') {
+            throw 'cannot read the commit time this release publishes under'
+          }
+          Write-Output "publication time: $publishedAt"
+          # An absolute staging path, because a filtered package script runs in the package directory
+          # rather than in the workspace: a relative `--out` would stage under `apps/desktop`, where
+          # the steps below — which run at the workspace root — would not find it.
+          $stage = Join-Path $env:GITHUB_WORKSPACE 'release-stage'
+          pnpm --filter @deepseek-ai/dsh-desktop run community:release:stage $env:INSTALLER --out $stage --tag $env:RELEASE_TAG --published-at $publishedAt
+
+      # The staged directory is the release, so its file set is pinned here rather than left to a glob
+      # at upload time: an extra file appearing in it would otherwise be published by the uploader
+      # without anyone having named it.
+      - name: Verify the staged release assets
+        shell: pwsh
+        run: |
+          $names = @(Get-ChildItem -LiteralPath release-stage -File | ForEach-Object { $_.Name } | Sort-Object)
+          Write-Output "staged: $($names -join ', ')"
+          $installers = @($names | Where-Object { $_.EndsWith('.exe') })
+          if ($installers.Count -ne 1) {
+            throw "expected exactly one installer in release-stage, found $($installers.Count)"
+          }
+          $expected = @($installers[0], '${{ env.COMMUNITY_RELEASE_MANIFEST }}', 'SHA256SUMS.txt') | Sort-Object
+          $unexpected = @(Compare-Object $names $expected)
+          if ($unexpected.Count -ne 0) {
+            throw "release-stage holds $($names -join ', '); a release publishes exactly $($expected -join ', ')"
+          }
+
+      # Only the staged release: the unpacked application, the blockmap, and the packaging journals
+      # stay in the runner's build tree, where nothing can publish them.
+      - name: Upload the staged release assets
         uses: actions/upload-artifact@v4
         with:
-          name: community-windows-installer
-          path: .dsh-build/win-x64-community/deepseek-harness-*-win-x64-community-unsigned.exe
+          name: community-release-assets
+          path: release-stage/*
           if-no-files-found: error
           retention-days: 7
 
@@ -217,47 +317,95 @@ jobs:
     if: ${{ inputs.publish }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    # The only job that may write, and it holds no checkout and no secret: it publishes the artifact
-    # it was handed, to the repository that ran this workflow and to no other.
+    # The only job that may write. It holds no checkout and no secret: it publishes the files it was
+    # handed, to the repository this lane is allowed to publish to and to no other.
     permissions:
       contents: write
     environment: release-desktop-community
+    # Publishing is a transaction. A rerun has to finish a release the first attempt left
+    # half-uploaded rather than fail on it, and two runs must never edit one release at the same time;
+    # the tag keys the group, so different releases never queue behind one another.
+    concurrency:
+      group: release-desktop-community-${{ needs.build.outputs.release_tag }}
+      cancel-in-progress: false
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: community-windows-installer
+          name: community-release-assets
           path: dist
 
-      - name: Verify the installer reached the publish lane unchanged
+      # The publish lane has no checkout and no toolchain, so every statement it makes about the
+      # release is about the bytes in front of it. Five things are pinned: which files are present,
+      # that the installer still hashes to the released checksum list, that the manifest — the one
+      # file a client reads — carries that same digest, that its asset URL is this release's immutable
+      # tag path, and that it never addresses the installer through `latest`, whose meaning moves with
+      # the next release.
+      - name: Verify the staged release assets
+        env:
+          MANIFEST: ${{ env.COMMUNITY_RELEASE_MANIFEST }}
+          REPOSITORY: ${{ env.COMMUNITY_RELEASE_REPOSITORY }}
+          RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
         run: |
           set -euo pipefail
           ls -l dist
-          for file in dist/*; do
-            case "$file" in
-              *-community-unsigned.exe) ;;
-              *) echo "unexpected artifact in the publish lane: $file" >&2; exit 1 ;;
-            esac
+          staged=$(find dist -type f | wc -l)
+          if [ "$staged" -ne 3 ]; then
+            echo "a release publishes exactly three files, and dist holds $staged" >&2
+            exit 1
+          fi
+          asset=$(basename "$(ls dist/*.exe)")
+          for expected in "$asset" "$MANIFEST" SHA256SUMS.txt; do
+            [ -f "dist/$expected" ] || { echo "missing dist/$expected" >&2; exit 1; }
           done
+          # `sha256sum -c` reads the checksum list the release ships, so this is that file's own claim
+          # being tested rather than a second copy of the digest.
+          (cd dist && sha256sum -c SHA256SUMS.txt)
+          declared=$(grep -o '"sha256": "[0-9a-f]\{64\}"' "dist/$MANIFEST" | cut -d'"' -f4)
+          actual=$(sha256sum "dist/$asset" | cut -d' ' -f1)
+          if [ -z "$declared" ] || [ "$declared" != "$actual" ]; then
+            echo "the manifest does not carry the staged installer's digest" >&2
+            exit 1
+          fi
+          grep -F "https://github.com/$REPOSITORY/releases/download/$RELEASE_TAG/$asset" "dist/$MANIFEST" >/dev/null \
+            || { echo "the manifest does not name this release's asset URL" >&2; exit 1; }
+          if grep -F 'latest/download' "dist/$MANIFEST" >/dev/null; then
+            echo "the manifest must not address the installer through the moving latest alias" >&2
+            exit 1
+          fi
 
-      - name: Create the GitHub Release
-        # This job has no checkout, so `gh` cannot discover the repository from a working tree and
-        # must be given it explicitly. It publishes to the repository that ran this workflow, and the
-        # expression keeps that true for a fork without naming one here.
+      - name: Create or update the GitHub Release
+        # This job has no checkout, so `gh` cannot discover the repository from a working tree and must
+        # be given it explicitly — the fork's own repository, named in the workflow rather than taken
+        # from whoever ran it.
         env:
           GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
+          GH_REPO: ${{ env.COMMUNITY_RELEASE_REPOSITORY }}
+          REPOSITORY: ${{ github.repository }}
+          MANIFEST: ${{ env.COMMUNITY_RELEASE_MANIFEST }}
+          RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
           COMMUNITY_VERSION: ${{ needs.build.outputs.community_version }}
+          PACKAGED_VERSION: ${{ needs.build.outputs.packaged_version }}
           UPSTREAM_BASE: ${{ needs.build.outputs.upstream_base }}
           UPSTREAM_COMMIT: ${{ needs.build.outputs.upstream_commit }}
         run: |
           set -euo pipefail
-          # The packaged version is read back from the artifact name the build produced, so this lane
-          # never reads the repository's contents. The community version comes from the build job's
-          # output instead of being read here, for the same reason.
-          installer=$(basename "$(ls dist/*-community-unsigned.exe)")
-          packaged=${installer#deepseek-harness-}
-          packaged=${packaged%-win-x64-community-unsigned.exe}
-          hash=$(sha256sum "dist/$installer" | cut -d' ' -f1)
+          # A run this lane cannot prove is publishing to the fork's own repository stops here, rather
+          # than creating a release in a copy of the fork that this workflow was never reviewed for.
+          if [ "$REPOSITORY" != "$GH_REPO" ]; then
+            echo "this workflow publishes only to $GH_REPO, not to $REPOSITORY" >&2
+            exit 1
+          fi
+          # A tag that already exists has to name the commit being released: a release page
+          # attributing these bytes to another commit would be worse than a failed run. When the ref
+          # answers, the tag is there and is compared; when it does not, the tag is absent and the
+          # create below makes it at this commit. An API failure after this point fails the run too.
+          tag_commit=$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha 2>/dev/null || true)
+          if [ -n "$tag_commit" ] && [ "$tag_commit" != "${{ github.sha }}" ]; then
+            echo "tag $RELEASE_TAG names $tag_commit, not the built ${{ github.sha }}" >&2
+            exit 1
+          fi
+          asset=$(basename "$(ls dist/*.exe)")
+          hash=$(sha256sum "dist/$asset" | cut -d' ' -f1)
           cat > notes.md <<'NOTES'
           Unofficial community build of DeepSeek Harness. This project and its binary releases are not published, endorsed, or supported by DeepSeek. Based on the open-source DeepSeek Harness project.
 
@@ -266,18 +414,32 @@ jobs:
           Windows x64 only, and unsigned. Verify the download against the checksum below before running it; Windows will warn about an unknown publisher.
 
           This build uses its own application identity, install directory, shortcuts and `~/.dsh-community` home, so it installs beside a DeepSeek release without touching it. It contacts no DeepSeek update or telemetry service: mandatory updates are disabled and session-log telemetry defaults to disabled. `LICENSE` and `THIRD_PARTY_NOTICES.md` ship in the installation under `licenses/`.
+
+          ### Known limitations
+
+          - Upgrading from an earlier Community version needs one manual install: this release cannot install itself over the version it replaces.
+          - A Community installation and an official DeepSeek release can be installed side by side, but the two cannot run at the same time.
+          - The application checks for and downloads Community updates; installing one is a manual step, and no automatic or background installation is available.
           NOTES
           cat >> notes.md <<NOTES
 
           - Community version: \`v$COMMUNITY_VERSION\`
           - Upstream base: \`$UPSTREAM_BASE\` ($UPSTREAM_COMMIT)
-          - Installer: \`$installer\` (packages $packaged)
+          - Installer: \`$asset\` (packages $PACKAGED_VERSION)
+          - Update manifest: \`$MANIFEST\`
           - SHA-256: \`$hash\`
           - Source: \`${{ github.sha }}\`
           NOTES
           cat notes.md
-          gh release create "community-v$COMMUNITY_VERSION" "dist/$installer" \
-            --target "${{ github.sha }}" \
-            --title "DeepSeek Harness Community v$COMMUNITY_VERSION (unofficial, unsigned)" \
-            --notes-file notes.md \
-            --prerelease
+          title="DeepSeek Harness Community v$COMMUNITY_VERSION (unofficial, unsigned)"
+          # Not a prerelease: `releases/latest` — the address the client reads the manifest from —
+          # skips prereleases, so a prerelease would hide the very file this release exists to serve.
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" --title "$title" --notes-file notes.md
+            gh release upload "$RELEASE_TAG" "dist/$asset" "dist/$MANIFEST" dist/SHA256SUMS.txt --clobber
+          else
+            gh release create "$RELEASE_TAG" "dist/$asset" "dist/$MANIFEST" dist/SHA256SUMS.txt \
+              --target "${{ github.sha }}" \
+              --title "$title" \
+              --notes-file notes.md
+          fi

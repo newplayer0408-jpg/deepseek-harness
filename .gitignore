@@ -39,6 +39,9 @@ packages/**/__pycache__/
 apps/web/dist/
 .artifacts/
 .dsh-build/
+# Where a Community release stages the files it publishes; the release lane uploads them, and they
+# are build output rather than source.
+release-stage/
 .playwright-mcp/
 .orig
 .worktrees/
