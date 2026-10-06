@@ -26,6 +26,10 @@ import { resolveDesktopPaths } from './paths.ts'
 import { bootstrapDesktopVariant } from './desktop-variant.ts'
 import { readCommunityVersion } from './community-version.ts'
 import { desktopAboutDetail } from './community-version-presentation.ts'
+import { resolveCommunityUpdateSurfaces } from './community-update.ts'
+import { communityVariantArguments } from './community-variant-argument.ts'
+import { createDesktopCommunityDiagnostics } from './community-diagnostics-integration.ts'
+import type { DesktopCommunityDiagnosticsWindow } from './community-diagnostics-window.ts'
 import { DesktopProjectManager } from './project-manager.ts'
 import { DesktopHostFatalError, DesktopHostProcess, DesktopHostUncleanExitError } from './host-process.ts'
 import { DesktopPlatformView, PLATFORM_IPC, platformBounds } from './platform-view.ts'
@@ -34,7 +38,8 @@ import { installMicrophonePermissions } from './microphone-permissions.ts'
 import { DesktopBackendController } from './backend-controller.ts'
 import { DESKTOP_IPC, SCHEME, assertDesktopSender, type DesktopUpdateState } from './ipc.ts'
 import { readDeviceInfo } from './device-info.ts'
-import { desktopUpdateReadyConfirmation, formatDesktopMessage, resolveDesktopLocale, resolveDesktopStartupLocale } from './locale.ts'
+import { desktopUpdateReadyConfirmation, formatDesktopMessage, resolveDesktopLocale, resolveDesktopStartupLocale,
+  type DesktopMessages } from './locale.ts'
 import { claimDesktopSingleInstance } from './single-instance.ts'
 import { DesktopUpdateCoordinator } from './update-coordinator.ts'
 import { DesktopCommandManager } from './command-management.ts'
@@ -206,7 +211,7 @@ function platformLoginUrl(authorizeUrl: string): string {
   return url.href
 }
 
-function createWindow(preload: string, show = false, primary = false): BrowserWindow {
+function createWindow(preload: string, show = false, primary = false, rendererArguments: readonly string[] = []): BrowserWindow {
   const window = new BrowserWindow({
     width: 1280,
     height: 820,
@@ -237,6 +242,11 @@ function createWindow(preload: string, show = false, primary = false): BrowserWi
       webSecurity: true,
       webviewTag: primary,
       devTools: true,
+      // A sandboxed preload cannot read the manifest, so the one build fact the shell's own caption
+      // chrome reads arrives the documented way: `webPreferences.additionalArguments` is the only
+      // place Electron appends to the renderer's `process.argv`. Every build that passes nothing
+      // keeps its exact renderer arguments.
+      ...(rendererArguments.length === 0 ? {} : { additionalArguments: [...rendererArguments] }),
     },
   })
   window.webContents.setWindowOpenHandler(({ url }) => {
@@ -324,6 +334,10 @@ async function main(): Promise<void> {
   // declare the community variant reads nothing here, so a release keeps its own version line and
   // can never display community metadata even if the file were left beside it.
   const communityVersion = await readCommunityVersion({ appPath: app.getAppPath(), variant: desktopVariant })
+  // Which update surfaces this installation owns. A community build owns its own and never touches
+  // the official updater; a release and a development build answer exactly as they always have, which
+  // is what this table exists to keep in one place instead of scattered across the update paths.
+  const updateSurfaces = resolveCommunityUpdateSurfaces(desktopVariant)
   void pruneCrashReports(app.getPath('logs'))
   const journalDirectory = process.env.DSH_DESKTOP_UPDATE_JOURNAL_DIR
   const updateJournal = journalDirectory === undefined ? undefined : new DesktopUpdateJournal(journalDirectory, app.getVersion())
@@ -392,8 +406,11 @@ async function main(): Promise<void> {
   }
   // Copy comes from the same locale as the update prompts so the dialog
   // chrome and its content never mix languages.
+  // A community build names itself in the dialogs it owns; a release keeps the wording it shipped.
+  const aboutLabel = (messages: DesktopMessages): string => communityVersion === undefined
+    ? messages.aboutMenu : messages.aboutCommunityMenu
   const showAbout = async (): Promise<void> => {
-    await ordinaryMessageBox({ type: 'info', title: locale.messages.aboutMenu, message: locale.messages.aboutProduct,
+    await ordinaryMessageBox({ type: 'info', title: aboutLabel(locale.messages), message: locale.messages.aboutProduct,
       detail: desktopAboutDetail(locale.messages, { build: app.getVersion(), community: communityVersion }),
       buttons: [locale.messages.updateAcknowledge], cancelId: 0 })
   }
@@ -573,6 +590,19 @@ async function main(): Promise<void> {
     if (backend.host === undefined || welcomeBackend === undefined) throw new Error('desktop welcome: backend unavailable')
     return welcomeBackend.read()
   }
+  // A community build's diagnostics read the running process: the same runtime paths, Host, and
+  // privileges the shell itself uses. A release registers none of this, so it keeps no diagnostics
+  // IPC and no Community Diagnostics entry.
+  const diagnostics: DesktopCommunityDiagnosticsWindow | undefined = updateSurfaces.diagnosticsEntry
+    ? createDesktopCommunityDiagnostics({
+      locale: () => locale,
+      community: communityVersion,
+      runtime: { dsh: resources.dsh, nodeBin: resources.nodeBin, pnpm: resources.pnpm, primary: primaryRuntime },
+      backend: () => backend.state.phase,
+      readHost: async () => { await readWelcomeState() },
+      modelConfigured: async () => (await readWelcomeState()).hasApiKey,
+    })
+    : undefined
   stopForRecovery = () => backend.close()
 
   const reconcileBackend = (): Promise<void> => {
@@ -803,9 +833,25 @@ async function main(): Promise<void> {
     await openUpdatePrompt()
   })
 
+  /**
+   * Answer a request for updates on a build that has none of its own.
+   *
+   * A community installation must never open the official update flow: it has no Community feed yet,
+   * so the honest answer names the build and its channel rather than reporting a check that cannot
+   * succeed. It is deliberately not "you are up to date" either — that would claim a comparison
+   * nobody made.
+   */
+  const showCommunityUpdate = async (): Promise<void> => {
+    await ordinaryMessageBox({ type: 'info', title: locale.messages.aboutCommunityProduct,
+      message: locale.messages.communityUpdateMessage,
+      detail: desktopAboutDetail(locale.messages, { build: app.getVersion(), community: communityVersion }),
+      buttons: [locale.messages.updateAcknowledge], cancelId: 0 })
+  }
+
   let promptOperation: Promise<void> | undefined
   let policyAuthenticationQueued = false
   const openUpdatePrompt = (manual = false): Promise<void> => {
+    if (!updateSurfaces.upstreamUpdate) return showCommunityUpdate()
     if (authenticationOperation !== undefined) {
       policyAuth?.focus(); updateDialog.focus()
     }
@@ -924,11 +970,14 @@ async function main(): Promise<void> {
 
   const automaticCheck = (): void => {
     if (!quitting) void mandatoryPolicy?.check('foreground-or-resume').catch((error: unknown) => { console.error(error) })
-    if (!quitting) void updateSchedule.check().catch((error: unknown) => { console.error(error) })
+    // A community build polls nothing: it has no feed, so a foreground or resume check would only
+    // produce a failure notice for a check the user never asked for.
+    if (!quitting && updateSurfaces.upstreamUpdate) void updateSchedule.check().catch((error: unknown) => { console.error(error) })
   }
   powerMonitor.on('resume', automaticCheck)
   app.on('will-quit', () => {
     updateSchedule.dispose()
+    diagnostics?.dispose()
     powerMonitor.off('resume', automaticCheck)
     updates.dispose()
   })
@@ -955,31 +1004,40 @@ async function main(): Promise<void> {
       { role: 'hideOthers', label: currentDesktopLocale().messages.hideOtherApplications },
       { role: 'unhide', label: currentDesktopLocale().messages.showAllApplications }, { type: 'separator' }]
     : []
-  const applicationItems = (): MenuItemConstructorOptions[] => [
-    // Windows has no system About panel; Electron's fallback is a plain
-    // message box, so the shell shows its own dimmed dialog instead.
-    process.platform === 'win32'
-      ? { label: currentDesktopLocale().messages.aboutMenu,
-        click: () => { void showAbout().catch((error: unknown) => { console.error(error) }) } }
-      : { label: currentDesktopLocale().messages.aboutMenu, role: 'about' },
-    { type: 'separator' },
-    { label: currentDesktopLocale().messages.checkUpdatesMenu, click: () => { void openUpdatePrompt(true) } },
-    ...process.platform === 'darwin' || process.platform === 'win32'
-      ? [{ label: currentDesktopLocale().messages.cliCommandMenu, click: () => { void commandManager.show() } }] : [],
-    ...development ? [
-      { type: 'separator' as const },
-      { label: currentDesktopLocale().messages.reloadPageMenu, role: 'reload' as const },
-      { label: currentDesktopLocale().messages.restartAppHostMenu, click: () => {
-        if (quitting) return
-        app.relaunch()
-        quitWithoutConfirmation()
-      } },
-    ] : [],
-    { type: 'separator' },
-    ...hideCommands,
-    { role: 'quit', ...(darwin ? { label: currentDesktopLocale().messages.quitApplication }
-      : process.platform === 'win32' ? { label: currentDesktopLocale().messages.exitApplication } : {}) },
-  ]
+  const applicationItems = (): MenuItemConstructorOptions[] => {
+    const messages = currentDesktopLocale().messages
+    // The two entries that differ by build sit in the seats the release already uses: About names the
+    // product the user is running, and the update seat holds whichever update story this build has.
+    // A community build offers its own diagnostics there instead of an official check it cannot run.
+    const about = aboutLabel(messages)
+    return [
+      // Windows has no system About panel; Electron's fallback is a plain
+      // message box, so the shell shows its own dimmed dialog instead.
+      process.platform === 'win32'
+        ? { label: about,
+          click: () => { void showAbout().catch((error: unknown) => { console.error(error) }) } }
+        : { label: about, role: 'about' },
+      { type: 'separator' },
+      ...updateSurfaces.upstreamUpdate
+        ? [{ label: messages.checkUpdatesMenu, click: () => { void openUpdatePrompt(true) } }]
+        : [{ label: messages.diagnosticsMenu, click: () => { diagnostics?.open() } }],
+      ...process.platform === 'darwin' || process.platform === 'win32'
+        ? [{ label: messages.cliCommandMenu, click: () => { void commandManager.show() } }] : [],
+      ...development ? [
+        { type: 'separator' as const },
+        { label: messages.reloadPageMenu, role: 'reload' as const },
+        { label: messages.restartAppHostMenu, click: () => {
+          if (quitting) return
+          app.relaunch()
+          quitWithoutConfirmation()
+        } },
+      ] : [],
+      { type: 'separator' },
+      ...hideCommands,
+      { role: 'quit', ...(darwin ? { label: messages.quitApplication }
+        : process.platform === 'win32' ? { label: messages.exitApplication } : {}) },
+    ]
+  }
   const devToolsItems: MenuItemConstructorOptions[] = [
     { role: 'toggleDevTools', visible: false },
     { role: 'toggleDevTools', visible: false, accelerator: 'F12' },
@@ -1074,7 +1132,7 @@ async function main(): Promise<void> {
     }
   }
   const createMainWindow = (): BrowserWindow => {
-    const window = createWindow(appPreload, false, true)
+    const window = createWindow(appPreload, false, true, communityVariantArguments(updateSurfaces.communityManaged))
     mainWindow = window
     browserGuests.bind(window, (guest, name) => shortcuts.attachGuest(window, guest, name))
     shortcuts.attach(window)

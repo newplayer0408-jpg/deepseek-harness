@@ -194,10 +194,12 @@ const harness = await vi.hoisted(async () => {
   }
   const backgroundNotice = { close: vi.fn((hide: () => void) => { hide() }), dispose: vi.fn(), markerPath: undefined as string | undefined }
   const shellDialog = { isOpen: false, focus: vi.fn() }
+  // The Community diagnostics window writes its report here; nothing else in the shell copies text.
+  const clipboard = { writeText: vi.fn<(text: string) => void>() }
   return {
     failWindow(error: Error) { windowFailure = error },
     windows, hosts, handlers, app, FakeWindow, FakeHost, powerMonitor, nativeTheme, analytics,
-    trays, FakeTray, backgroundNotice, shellDialog,
+    trays, FakeTray, backgroundNotice, shellDialog, clipboard,
     menu, popup, socketHeaders: vi.fn(), loginShell, readLoginShell, updateCheck, updateDownload, updateInstall,
     platformDispose,
     platformCloseAndWait,
@@ -250,6 +252,7 @@ const harness = await vi.hoisted(async () => {
       trays.length = 0
       backgroundNotice.markerPath = undefined
       shellDialog.isOpen = false
+      clipboard.writeText.mockClear()
       powerMonitor.removeAllListeners()
       app.isPackaged = true
       windowFailure = undefined
@@ -307,6 +310,7 @@ vi.mock('electron', () => ({
   powerMonitor: harness.powerMonitor,
   Tray: harness.FakeTray,
   nativeImage: { createFromPath: (path: string) => ({ path }) },
+  clipboard: harness.clipboard,
 }))
 vi.mock('../src/background-notice.ts', () => ({ DesktopBackgroundNotice: class {
   constructor(options: { markerPath: string }) { harness.backgroundNotice.markerPath = options.markerPath }
@@ -319,6 +323,11 @@ vi.mock('node:fs/promises', async (importOriginal) => {
     if (path === join('desktop-test-app', 'package.json')) {
       return Promise.resolve(JSON.stringify({ dshDesktopAppId: 'com.deepseek.dsh',
         dshMandatoryUpdatePolicy: harness.embeddedPolicy, dshDesktopVariant: harness.embeddedVariant }))
+    }
+    // The fork's version facts, which only a community build reads. A release never opens this file,
+    // so serving it here cannot give a release a version line it would not have had.
+    if (path === join('desktop-test-app', 'community-version.json')) {
+      return Promise.resolve(JSON.stringify({ communityVersion: '0.2-dev', upstreamBase: 'dsh-v0.2.0-rc.2' }))
     }
     return encoding === undefined ? original.readFile(path) : original.readFile(path, encoding)
   }) }
@@ -547,6 +556,104 @@ describe('desktop main startup', () => {
     ;(about!.click as () => void)()
     await vi.advanceTimersByTimeAsync(0)
     expect(console.error).toHaveBeenLastCalledWith(expect.objectContaining({ message: 'overlay unavailable' }))
+  })
+
+  /**
+   * The community build's half of the update contract.
+   *
+   * These cases start the real `main.ts` against a manifest that declares the community variant, so
+   * they fail if any wiring edit hands that build the official updater back. That is the regression
+   * this whole phase exists to prevent, and it cannot be caught from the surfaces table alone: the
+   * table says which surface a variant owns, and only an integration case says whether `main.ts`
+   * consults it.
+   */
+  describe('the update story a community build owns', () => {
+    /**
+     * Start a community installation whose Harness home is a temporary directory.
+     *
+     * The home is a real path outside the machine's own so the diagnostics write probe cannot touch
+     * the installation this test runs on. The variant bootstrap leaves an explicit `$DSH_HOME`
+     * alone, which is exactly what makes the override take.
+     */
+    async function readyCommunity() {
+      const home = mkdtempSync(join(tmpdir(), 'dsh-community-home-'))
+      onTestFinished(() => { rmSync(home, { recursive: true, force: true }) })
+      vi.stubEnv('DSH_HOME', home)
+      harness.embeddedVariant = 'community'
+      return await readyForUpdate()
+    }
+
+    it('replaces the official update check with its own diagnostics in the application menu', async () => {
+      await readyCommunity()
+      const labels = applicationMenuItems().map(item => item.label ?? item.role)
+      expect(labels).toContain(en.diagnosticsMenu)
+      // The regression: a community build offering to install the official product over itself.
+      expect(labels).not.toContain(en.checkUpdatesMenu)
+      expect(labels).not.toContain(zh.checkUpdatesMenu)
+    })
+
+    it('names the community product in About rather than the official one', async () => {
+      await readyCommunity()
+      expect(applicationMenuItems()[0]!.label).toBe(en.aboutCommunityMenu)
+    })
+
+    it('never runs the official update check, at startup, on resume, or on focus', async () => {
+      await readyCommunity()
+      await vi.advanceTimersByTimeAsync(0)
+      // A release reaches the updater here: the same startup sequence calls it once when the surface
+      // is the official one, which is what makes this assertion about the guard and not about timing.
+      expect(harness.updateCheck).not.toHaveBeenCalled()
+      harness.powerMonitor.emit('resume')
+      harness.windows[0]!.emit('focus')
+      await vi.advanceTimersByTimeAsync(0)
+      expect(harness.updateCheck).not.toHaveBeenCalled()
+    })
+
+    it('answers an update request with the Community explanation instead of a failed official check', async () => {
+      await readyCommunity()
+      harness.dialog.showMessageBox.mockResolvedValueOnce({ response: 0 })
+      await invoke(DESKTOP_IPC.updatesOpen, 'app')
+      await vi.advanceTimersByTimeAsync(0)
+      expect(harness.updateCheck).not.toHaveBeenCalled()
+      const options = harness.dialog.showMessageBox.mock.lastCall![0] as MessageBoxOptions
+      expect(options.title).toBe(en.aboutCommunityProduct)
+      expect(options.message).toBe(en.communityUpdateMessage)
+      expect(options.detail).toContain('Upstream base dsh-v0.2.0-rc.2')
+      expect(options.detail).toContain('Update channel Development')
+      expect(options.detail).toContain(en.aboutUpdateStatusUnavailable)
+      // Never the copy a check that could not run would have produced, and never its header.
+      const shown = JSON.stringify(options)
+      expect(shown).not.toContain(en.updateCheckFailed)
+      expect(shown).not.toContain(en.updateCheckFailedTitle)
+    })
+
+    it('holds the Community Diagnostics window behind the update seat instead of the update dialog', async () => {
+      await readyCommunity()
+      harness.dialog.showMessageBox.mockClear()
+      const entry = applicationMenuItems().find(item => item.label === en.diagnosticsMenu)!.click as () => void
+      const before = harness.windows.length
+      entry()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(harness.windows).toHaveLength(before + 1)
+      expect(harness.windows.at(-1)!.urls.at(-1)).toBe('dsh-app://shell/community-diagnostics.html')
+      // The shell's own update dialog is what a release opens here; a community build opens none.
+      expect(harness.dialog.showMessageBox).not.toHaveBeenCalled()
+    })
+
+    it('marks its renderer as a community build, in the one place Electron reads', async () => {
+      await readyCommunity()
+      // `webPreferences.additionalArguments` is the only member Electron appends to the renderer's
+      // `process.argv`; a marker at the top level of the window options never reaches the preload.
+      expect(harness.windows[0]!.options).toMatchObject({
+        webPreferences: { additionalArguments: ['--dsh-desktop-variant=community'] },
+      })
+    })
+
+    it('leaves the renderer arguments of a release exactly as they were', async () => {
+      await readyForUpdate()
+      const options = harness.windows[0]!.options as { webPreferences?: { additionalArguments?: unknown } }
+      expect(options.webPreferences?.additionalArguments).toBeUndefined()
+    })
   })
 
   it('shows one explained startup login before Host readiness and joins concurrent checks without reopening it', async () => {
