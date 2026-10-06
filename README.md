@@ -12,6 +12,8 @@ Documentation: [https://deepseek-harness.github.io/deepseek-harness/](https://de
 
 Unofficial community build of DeepSeek Harness. This project and its binary releases are not published, endorsed, or supported by DeepSeek. Based on the open-source DeepSeek Harness project.
 
+**Known limitation.** A Community build and an official DeepSeek Harness build cannot be used at the same time on one machine: close one before starting the other. The exact cause has not been diagnosed yet. Community builds also have no automatic updates — the Community Diagnostics entry in the application menu reports what the running installation is, and its version facts are shown in the About dialog.
+
 ## Developer preview
 
 DeepSeek Harness is in _developer preview_ and iterating rapidly. **THERE WILL BE COMPATIBILITY-BREAKING CHANGES.**

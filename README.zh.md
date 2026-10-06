@@ -12,6 +12,8 @@ DeepSeek Harness（`dsh`）是由 [DeepSeek AI](https://deepseek.com) 开发的�
 
 DeepSeek Harness 的非官方社区构建。本项目及其二进制发行版并非由 DeepSeek 发布、认可或提供支持，基于开源 DeepSeek Harness 项目构建。
 
+**已知限制。** 同一台机器上不能同时使用社区构建与官方 DeepSeek Harness 构建：请先关闭其中一个，再启动另一个。具体原因尚未定位。此外，社区构建目前没有自动更新——应用菜单中的“社区诊断”入口会说明当前运行的构建，其版本信息显示在“关于”对话框中。
+
 ## 开发者预览
 
 DeepSeek Harness 处于 _开发者预览_ 阶段，正在快速迭代。**未来将出现破坏兼容性的变更。**

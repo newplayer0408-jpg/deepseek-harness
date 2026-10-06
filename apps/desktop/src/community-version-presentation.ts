@@ -18,6 +18,7 @@
  */
 
 import type { CommunityVersionIdentity } from './community-version.ts'
+import { COMMUNITY_UPDATE_CHANNEL_DEVELOPMENT, communityUpdateChannel } from './community-update.ts'
 import type { DesktopMessages } from './locale.ts'
 import { formatDesktopMessage } from './locale.ts'
 
@@ -36,10 +37,13 @@ export interface DesktopAboutVersions {
 /**
  * Render the About detail text for the build that is running.
  *
- * A release and a development build get the release line alone, unchanged. A community build gets
- * its product version, the upstream base tag it was synced to, the commit that tag named when the
- * build recorded one, and the build it installed, in that order — the four values a community issue
- * is reported against, and the ones a comparison with upstream starts from.
+ * A release and a development build get the release line alone, unchanged. A community build gets an
+ * identity badge, its product version, the upstream base tag it was synced to, the commit that tag
+ * named when the build recorded one, the build it installed, and then the two update facts a
+ * community user needs: which channel this installation follows, and that no automatic Community
+ * update exists yet. The last two belong here rather than in an updater dialog because this is the
+ * surface that answers "what am I running" — and because a community build has no update dialog to
+ * put them in.
  *
  * The commit line is left out rather than blanked when the build recorded none, because the tag is
  * what the fork declares and the commit is derived from it: a build that could not resolve the tag
@@ -52,10 +56,19 @@ export function desktopAboutDetail(messages: DesktopMessages, versions: DesktopA
   const community = versions.community
   if (community === undefined) return formatDesktopMessage(messages.aboutVersion, { version: versions.build })
   const commit = community.upstreamCommit
+  // The channel is read from the version the build reports, so the line can never disagree with the
+  // version line above it. An unreadable version yields no identity at all, which is why the
+  // release wording is the fallback here rather than a channel the build never declared.
+  const channel = communityUpdateChannel(community) === COMMUNITY_UPDATE_CHANNEL_DEVELOPMENT
+    ? messages.aboutUpdateChannelDevelopment
+    : messages.aboutUpdateChannelRelease
   return [
+    messages.communityBadge,
     formatDesktopMessage(messages.aboutCommunityVersion, { version: community.version }),
     formatDesktopMessage(messages.aboutUpstreamBase, { version: community.upstreamBase }),
     ...commit === undefined ? [] : [formatDesktopMessage(messages.aboutUpstreamCommit, { commit })],
     formatDesktopMessage(messages.aboutBuild, { version: versions.build }),
+    formatDesktopMessage(messages.aboutUpdateChannel, { channel }),
+    messages.aboutUpdateStatusUnavailable,
   ].join('\n')
 }

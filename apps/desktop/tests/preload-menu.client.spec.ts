@@ -141,3 +141,36 @@ it('restores a contenteditable selection before opening Edit with the keyboard',
   expect(document.getSelection()!.toString()).toBe('itable')
   await vi.waitFor(() => { expect(buttons[1]!.getAttribute('aria-expanded')).toBe('false') })
 })
+
+/** The badge the caption bar shows for a Community build, or null on every other build. */
+function communityBadge(): Element | null {
+  return document.querySelector('[data-windows-menu]')!.shadowRoot!.querySelector('[data-community-badge]')
+}
+
+function withRendererArguments(...argv: readonly string[]): void {
+  vi.stubGlobal('process', { ...process, argv: [...process.argv, ...argv] })
+}
+
+it('marks the caption bar of a Community build and of no other', () => {
+  menu = installWindowsMenu()
+  expect(communityBadge()).toBeNull()
+  menu.dispose()
+  withRendererArguments('--dsh-desktop-variant=community')
+  menu = installWindowsMenu()
+  expect(communityBadge()).not.toBeNull()
+})
+
+it('does not mark a build whose arguments merely contain the marker', () => {
+  withRendererArguments('--dsh-desktop-variant=community-not')
+  menu = installWindowsMenu()
+  expect(communityBadge()).toBeNull()
+})
+
+it('localizes the badge with the rest of the caption bar', () => {
+  withRendererArguments('--dsh-desktop-variant=community')
+  menu = installWindowsMenu()
+  expect(communityBadge()!.textContent).toBe('COMMUNITY')
+  document.documentElement.lang = 'zh-CN'
+  menu.update()
+  expect(communityBadge()!.textContent).toBe('社区版')
+})

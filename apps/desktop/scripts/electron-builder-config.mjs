@@ -46,6 +46,25 @@ import {
 const REPOSITORY_ROOT = fileURLToPath(new URL('../../..', import.meta.url))
 
 /**
+ * Resolve the official update feed one build may publish to, if any.
+ *
+ * Two independent inputs can withhold the feed, and they mean different things. An unsigned build has
+ * no signature for a feed to verify, which is a release-engineering state. A community build has no
+ * DeepSeek deployment to publish to at all, which is a product fact: if it carried a feed, the
+ * updater would read it and offer the official product over this installation, so the gate is on the
+ * variant rather than on the signing status that happens to accompany today's builds.
+ *
+ * Gating here rather than at the call sites is what makes the property testable without credentials:
+ * a signed community configuration must still resolve no feed.
+ * @param {{ unsigned: boolean, variant: string, env: NodeJS.ProcessEnv, platform: NodeJS.Platform, arch: string }} options - Signing status, product variant, and the environment and target to resolve with.
+ * @returns {ReturnType<typeof resolveDesktopAutoUpdateConfig> | undefined} Resolved feed, or undefined when this build publishes to none.
+ */
+export function resolveDesktopBuildUpdateFeed({ unsigned, variant, env, platform, arch }) {
+  if (unsigned || variant === DESKTOP_COMMUNITY_VARIANT) return undefined
+  return resolveDesktopAutoUpdateConfig(env, platform, arch)
+}
+
+/**
  * Create electron-builder configuration from one release environment.
  * @param {NodeJS.ProcessEnv} env - Packaging environment.
  * @param {NodeJS.Platform} hostPlatform - Build-host platform used when no explicit target is present.
@@ -117,7 +136,7 @@ export function createElectronBuilderConfig(
   if (windowsSigner !== undefined) {
     installWindowsNsisBootstrapSigner({ sign: windowsSigner })
   }
-  const update = unsigned ? undefined : resolveDesktopAutoUpdateConfig(env, resolvedPlatform, resolvedArch)
+  const update = resolveDesktopBuildUpdateFeed({ unsigned, variant, env, platform: resolvedPlatform, arch: resolvedArch })
   if (preparedRuntime !== undefined) buildPaths.dsh = preparedRuntime
   // electron-builder merges extraMetadata into the packaged manifest, so a build version here reaches
   // the artifact names, the update feed, and the installed app.getVersion() the updater compares against.

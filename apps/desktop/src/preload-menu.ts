@@ -1,5 +1,6 @@
 /** Windows caption menu labels and native popup anchors, isolated from the Web client. */
 import { ipcRenderer } from 'electron'
+import { isCommunityArguments } from './community-variant-argument.ts'
 import { DESKTOP_IPC } from './ipc.ts'
 import { resolveDesktopLocale } from './locale.ts'
 
@@ -24,6 +25,11 @@ export function installWindowsMenu(): { update(): void; dispose(): void } {
       color: var(--dsw-alias-label-primary); }
     button:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary); outline-offset: -2px; }
     :host-context(html[data-input-modality='pointer']) button:focus-visible { outline-color: transparent; }
+    [data-community-badge] { margin-left: 6px; padding: 0 6px; height: 18px; border-radius: 999px;
+      border: 1px solid var(--dsw-alias-state-business-primary);
+      color: var(--dsw-alias-state-business-primary); font: inherit; font-size: 11px;
+      font-weight: 600; letter-spacing: 0.04em; line-height: 16px;
+      -webkit-app-region: no-drag; user-select: none; }
   `
   const bar = document.createElement('div')
   bar.setAttribute('role', 'menubar')
@@ -85,7 +91,13 @@ export function installWindowsMenu(): { update(): void; dispose(): void } {
     return button
   }
   const buttons = [createButton('application', 0), createButton('edit', 1)] as const
-  shadow.append(style, bar)
+  // The caption bar is the one piece of chrome the shell draws itself above the product UI, which is
+  // what makes it the honest place for a build identity: a Community installation marks itself here
+  // and a release renders exactly the two buttons it always has.
+  const community = isCommunityArguments(process.argv)
+  const badge = document.createElement('span')
+  if (community) badge.dataset.communityBadge = ''
+  shadow.append(style, bar, ...community ? [badge] : [])
   const mount = (): void => {
     // AppFrame owns this seat; boot readiness alone precedes the rendered application.
     if (document.querySelector('[data-shell-overlay]') === null) return
@@ -100,6 +112,7 @@ export function installWindowsMenu(): { update(): void; dispose(): void } {
     bar.setAttribute('aria-label', messages.menuBar)
     buttons[0].textContent = messages.application
     buttons[1].textContent = messages.edit
+    if (community) badge.textContent = messages.communityBadge
   }
   update()
   return {

@@ -9,8 +9,13 @@
  * English-only assertion and ship a Chinese user an English dialog.
  *
  * The commit line has a fourth direction of its own: the base tag is what the fork commits, and the
- * commit is derived from it when a build runs, so a build that resolved none renders three lines
- * rather than a fourth line naming nothing.
+ * commit is derived from it when a build runs, so a build that resolved none renders one line fewer
+ * rather than a line naming nothing.
+ *
+ * The last two lines are the update story, and they are pinned as hard as the version facts: the
+ * channel is read from the version line above it so the two cannot disagree, and the status line says
+ * only that no automatic Community update exists — never that the build is up to date, which would
+ * claim a comparison nobody made.
  */
 import { describe, expect, it } from 'vitest'
 import type { CommunityVersionIdentity } from '../src/community-version.ts'
@@ -64,23 +69,44 @@ describe('the About detail of a build with no community metadata', () => {
 })
 
 describe('the About detail of a community build', () => {
-  it('names the community version, the upstream base and commit, and the build, one per line', () => {
+  it('names the identity badge, both version series, the build, and both update facts, one per line', () => {
     expect(desktopAboutDetail(en, about({ build: '0.1.7-rc.2.20261004.1' }))).toBe([
+      'COMMUNITY',
       'Community version v0.2-dev',
       'Upstream base dsh-v0.1.7-rc.2',
       `Upstream commit ${RECORDED_COMMIT}`,
       'Build 0.1.7-rc.2.20261004.1',
+      'Update channel Development',
+      'Update status: automatic Community updates are unavailable',
     ].join('\n'))
   })
 
   it('leaves the commit line out when the build recorded none, instead of rendering an empty one', () => {
     const detail = desktopAboutDetail(en, about({ community: COMMUNITY_WITHOUT_COMMIT }))
     expect(detail.split('\n')).toEqual([
+      'COMMUNITY',
       'Community version v0.2-dev',
       'Upstream base dsh-v0.1.7-rc.2',
       'Build 0.1.7-rc.2',
+      'Update channel Development',
+      'Update status: automatic Community updates are unavailable',
     ])
     expect(detail).not.toContain('Upstream commit')
+  })
+
+  it('reports the channel the version line itself declares, never a second declared fact', () => {
+    // The fork's release line is the bare version. A build on it must say Release without any other
+    // field changing, which is what makes the channel impossible to disagree with the version.
+    const released: CommunityVersionIdentity = { ...COMMUNITY, version: 'v0.2' }
+    expect(desktopAboutDetail(en, about({ community: released }))).toContain('Update channel Release')
+  })
+
+  it('never claims an automatic update is available, on either channel', () => {
+    for (const version of ['v0.2-dev', 'v0.2']) {
+      const detail = desktopAboutDetail(en, about({ community: { ...COMMUNITY, version } }))
+      expect(detail).toContain('automatic Community updates are unavailable')
+      expect(detail).not.toMatch(/up to date|Check for updates/iu)
+    }
   })
 
   it('keeps the community version apart from the build the application reports', () => {
@@ -93,17 +119,17 @@ describe('the About detail of a community build', () => {
 
   it('says the same thing in the shell\'s other language, with every fact intact', () => {
     const detail = desktopAboutDetail(zh, about())
-    expect(detail.split('\n')).toHaveLength(4)
+    expect(detail.split('\n')).toHaveLength(7)
     for (const fact of [COMMUNITY.version, COMMUNITY.upstreamBase, RECORDED_COMMIT, '0.1.7-rc.2']) {
       expect(detail).toContain(fact)
     }
     // The English wording is gone, which is what proves the copy came from the dictionary.
-    expect(detail).not.toMatch(/Community version|Upstream base|Upstream commit|Build /u)
+    expect(detail).not.toMatch(/Community version|Upstream base|Upstream commit|Build |Update channel|Update status/u)
   })
 
   it('drops the same line in the shell\'s other language, keeping every fact that remains', () => {
     const detail = desktopAboutDetail(zh, about({ community: COMMUNITY_WITHOUT_COMMIT }))
-    expect(detail.split('\n')).toHaveLength(3)
+    expect(detail.split('\n')).toHaveLength(6)
     for (const fact of [COMMUNITY.version, COMMUNITY.upstreamBase, '0.1.7-rc.2']) expect(detail).toContain(fact)
     expect(detail).not.toMatch(/Upstream commit/u)
   })
