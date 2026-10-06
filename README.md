@@ -10,9 +10,13 @@ Documentation: [https://deepseek-harness.github.io/deepseek-harness/](https://de
 
 ## Unofficial community build
 
-Unofficial community build of DeepSeek Harness. This project and its binary releases are not published, endorsed, or supported by DeepSeek. Based on the open-source DeepSeek Harness project.
+Unofficial community build of DeepSeek Harness. This project and its binary releases are not published, endorsed, or supported by DeepSeek. Based on the open-source DeepSeek Harness project. Community releases are published from the Community repository, `newplayer0408-jpg/deepseek-harness`.
 
-**Known limitation.** A Community build and an official DeepSeek Harness build cannot be used at the same time on one machine: close one before starting the other. The exact cause has not been diagnosed yet. Community builds also have no automatic updates — the Community Diagnostics entry in the application menu reports what the running installation is, and its version facts are shown in the About dialog.
+**Updating a Community build.** A Community build updates through its own channel, which the official product does not use. Moving from Community v0.1 to Community v0.2 is a manual step: download the v0.2 installer from the Community GitHub Releases page and install it once. From v0.2 on, the application checks for Community updates when asked — the "Check for Community Updates…" entry in the application menu reports the running version and the latest published version, and, when a newer stable release exists, offers to download it. The update service downloads the installer named by that release's `latest-community.json` manifest, and a download counts as ready only after its SHA-256 matches the digest recorded in the manifest. Installing is always something you do yourself: a Community build never installs an update silently, never runs an installer for you, and never closes the application on its own.
+
+**Community updates and upstream status are independent.** A Community build never calls the official updater and never reads the official update feed. Which official release a Community build is based on appears in the About dialog and in Community Diagnostics as a read-only fact, and it never triggers a download.
+
+**Known limitation.** A Community build and an official DeepSeek Harness build cannot be used at the same time on one machine: close one before starting the other. The exact cause has not been diagnosed yet. A Community build keeps its own application data apart from the official build, so installing, removing, or updating one leaves the other's state alone. Community Diagnostics reports what the running installation is, including its update source and the result of the last update check, and its version facts are shown in the About dialog.
 
 ## Developer preview
 
