@@ -25,11 +25,13 @@ import {
 import { resolveDesktopPaths } from './paths.ts'
 import { bootstrapDesktopVariant } from './desktop-variant.ts'
 import { readCommunityVersion } from './community-version.ts'
+import { readCommunityRelease } from './community-release.ts'
 import { desktopAboutDetail } from './community-version-presentation.ts'
 import { resolveCommunityUpdateSurfaces } from './community-update.ts'
 import { communityVariantArguments } from './community-variant-argument.ts'
 import { createDesktopCommunityDiagnostics } from './community-diagnostics-integration.ts'
 import type { DesktopCommunityDiagnosticsWindow } from './community-diagnostics-window.ts'
+import { createDesktopCommunityUpdate, type DesktopCommunityUpdate } from './community-update-integration.ts'
 import { DesktopProjectManager } from './project-manager.ts'
 import { DesktopHostFatalError, DesktopHostProcess, DesktopHostUncleanExitError } from './host-process.ts'
 import { DesktopPlatformView, PLATFORM_IPC, platformBounds } from './platform-view.ts'
@@ -334,6 +336,10 @@ async function main(): Promise<void> {
   // declare the community variant reads nothing here, so a release keeps its own version line and
   // can never display community metadata even if the file were left beside it.
   const communityVersion = await readCommunityVersion({ appPath: app.getAppPath(), variant: desktopVariant })
+  // The fork's own release source, read beside the version facts. It is gated the same way: a build
+  // that does not declare the community variant reads nothing, so a release cannot acquire a Community
+  // release repository even if the file were left beside it.
+  const communityRelease = await readCommunityRelease({ appPath: app.getAppPath(), variant: desktopVariant })
   // Which update surfaces this installation owns. A community build owns its own and never touches
   // the official updater; a release and a development build answer exactly as they always have, which
   // is what this table exists to keep in one place instead of scattered across the update paths.
@@ -590,6 +596,16 @@ async function main(): Promise<void> {
     if (backend.host === undefined || welcomeBackend === undefined) throw new Error('desktop welcome: backend unavailable')
     return welcomeBackend.read()
   }
+  // A community build's own update surface: it reads this fork's release manifest and never the
+  // official feed. A release builds none of this and keeps its own updater, and its IPC and menu are
+  // unchanged — which is what the surface table above decides.
+  const communityUpdate: DesktopCommunityUpdate | undefined = updateSurfaces.communityManaged
+    ? createDesktopCommunityUpdate({
+      locale: () => locale,
+      community: communityVersion,
+      release: communityRelease,
+    })
+    : undefined
   // A community build's diagnostics read the running process: the same runtime paths, Host, and
   // privileges the shell itself uses. A release registers none of this, so it keeps no diagnostics
   // IPC and no Community Diagnostics entry.
@@ -597,6 +613,7 @@ async function main(): Promise<void> {
     ? createDesktopCommunityDiagnostics({
       locale: () => locale,
       community: communityVersion,
+      update: () => communityUpdate?.facts(),
       runtime: { dsh: resources.dsh, nodeBin: resources.nodeBin, pnpm: resources.pnpm, primary: primaryRuntime },
       backend: () => backend.state.phase,
       readHost: async () => { await readWelcomeState() },
@@ -834,24 +851,19 @@ async function main(): Promise<void> {
   })
 
   /**
-   * Answer a request for updates on a build that has none of its own.
+   * Open this build's own update surface.
    *
-   * A community installation must never open the official update flow: it has no Community feed yet,
-   * so the honest answer names the build and its channel rather than reporting a check that cannot
-   * succeed. It is deliberately not "you are up to date" either — that would claim a comparison
-   * nobody made.
+   * A community installation must never open the official update flow: it has no DeepSeek feed, and
+   * reading one would offer the user a different product. The seat a release uses for its own check
+   * opens the Community window instead, which answers with this fork's release manifest or with the
+   * reason it could not be read.
    */
-  const showCommunityUpdate = async (): Promise<void> => {
-    await ordinaryMessageBox({ type: 'info', title: locale.messages.aboutCommunityProduct,
-      message: locale.messages.communityUpdateMessage,
-      detail: desktopAboutDetail(locale.messages, { build: app.getVersion(), community: communityVersion }),
-      buttons: [locale.messages.updateAcknowledge], cancelId: 0 })
-  }
+  const openCommunityUpdate = async (): Promise<void> => { communityUpdate?.open() }
 
   let promptOperation: Promise<void> | undefined
   let policyAuthenticationQueued = false
   const openUpdatePrompt = (manual = false): Promise<void> => {
-    if (!updateSurfaces.upstreamUpdate) return showCommunityUpdate()
+    if (!updateSurfaces.upstreamUpdate) return openCommunityUpdate()
     if (authenticationOperation !== undefined) {
       policyAuth?.focus(); updateDialog.focus()
     }
@@ -977,6 +989,7 @@ async function main(): Promise<void> {
   powerMonitor.on('resume', automaticCheck)
   app.on('will-quit', () => {
     updateSchedule.dispose()
+    communityUpdate?.dispose()
     diagnostics?.dispose()
     powerMonitor.off('resume', automaticCheck)
     updates.dispose()
@@ -1006,9 +1019,9 @@ async function main(): Promise<void> {
     : []
   const applicationItems = (): MenuItemConstructorOptions[] => {
     const messages = currentDesktopLocale().messages
-    // The two entries that differ by build sit in the seats the release already uses: About names the
-    // product the user is running, and the update seat holds whichever update story this build has.
-    // A community build offers its own diagnostics there instead of an official check it cannot run.
+    // A community build offers its own update surface and its own diagnostics there instead of an
+    // official check it cannot run. Both sit in the seat the release fills with one entry, because a
+    // Community installation has two questions to answer where a release has one.
     const about = aboutLabel(messages)
     return [
       // Windows has no system About panel; Electron's fallback is a plain
@@ -1020,7 +1033,10 @@ async function main(): Promise<void> {
       { type: 'separator' },
       ...updateSurfaces.upstreamUpdate
         ? [{ label: messages.checkUpdatesMenu, click: () => { void openUpdatePrompt(true) } }]
-        : [{ label: messages.diagnosticsMenu, click: () => { diagnostics?.open() } }],
+        : [
+          { label: messages.communityUpdateMenu, click: () => { communityUpdate?.open() } },
+          { label: messages.diagnosticsMenu, click: () => { diagnostics?.open() } },
+        ],
       ...process.platform === 'darwin' || process.platform === 'win32'
         ? [{ label: messages.cliCommandMenu, click: () => { void commandManager.show() } }] : [],
       ...development ? [

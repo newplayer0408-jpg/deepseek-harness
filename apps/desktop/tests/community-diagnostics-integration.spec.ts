@@ -181,6 +181,9 @@ function wiring(overrides: Partial<DesktopCommunityDiagnosticsOptions> = {}): De
     appPath: tree.appPath,
     home: tree.home,
     clock: () => new Date('2026-10-06T00:00:00.000Z'),
+    // A build whose update surface has not reported anything yet: the diagnostics rows then carry
+    // their own absent-fact wording rather than a value any probe produced.
+    update: () => undefined,
     ...overrides,
   }
 }
@@ -326,6 +329,72 @@ describe('the facts the wiring supplies', () => {
     // The commit is a fact about what this build packages, so nothing abbreviates it for display.
     expect(row(presentation, 'upstream-commit').value).toBe(RECORDED_COMMIT)
     expect(row(presentation, 'application-version').value).toBe('0.2.0-rc.2')
+  })
+
+  it('renders the update facts the update service reported, and nothing it did not', async () => {
+    const presentation = await present(wiring({
+      update: () => ({
+        source: 'newplayer0408-jpg/deepseek-harness',
+        channel: 'development',
+        phase: 'update-available',
+        latestVersion: 'v0.3',
+        schemaVersion: 1,
+        stored: false,
+      }),
+    }))
+    expect(row(presentation, 'community-update-source'))
+      .toMatchObject({ state: 'PASS', value: 'newplayer0408-jpg/deepseek-harness' })
+    expect(row(presentation, 'community-update-channel')).toMatchObject({ state: 'INFO', value: 'development' })
+    expect(row(presentation, 'community-update-last-check')).toMatchObject({ state: 'INFO', value: 'update available' })
+    expect(row(presentation, 'community-update-latest')).toMatchObject({ state: 'INFO', value: 'v0.3' })
+    expect(row(presentation, 'community-update-manifest')).toMatchObject({ state: 'INFO', value: '1' })
+    expect(row(presentation, 'community-update-download')).toMatchObject({ state: 'INFO', value: 'no installer on disk' })
+    expect(row(presentation, 'community-update-checksum')).toMatchObject({ state: 'INFO', value: 'not verified yet' })
+  })
+
+  it('reports a missing release source as a warning rather than as a healthy silence', async () => {
+    const presentation = await present(wiring({ update: () => ({ channel: 'unknown', phase: 'idle', stored: false }) }))
+    expect(row(presentation, 'community-update-source'))
+      .toMatchObject({ state: 'WARN', value: 'unknown', code: 'E-UPDATE-SOURCE-MISSING' })
+    // Nothing was checked, so nothing is claimed: the check row reports the phase, not a result.
+    expect(row(presentation, 'community-update-last-check')).toMatchObject({ state: 'INFO', value: 'not checked yet' })
+  })
+
+  it('reports a refused checksum as a blocked download, never as a ready file', async () => {
+    const presentation = await present(wiring({
+      update: () => ({
+        source: 'newplayer0408-jpg/deepseek-harness',
+        channel: 'development',
+        phase: 'checksum-error',
+        stored: false,
+      }),
+    }))
+    expect(row(presentation, 'community-update-last-check')).toMatchObject({
+      state: 'FAIL', value: 'failed: checksum', code: 'E-UPDATE-CHECKSUM-FAILED',
+    })
+    expect(row(presentation, 'community-update-download')).toMatchObject({ state: 'WARN', value: 'blocked' })
+    expect(row(presentation, 'community-update-checksum')).toMatchObject({ state: 'FAIL', value: 'failed' })
+  })
+
+  it('carries no repository address and no local path in the update rows', async () => {
+    const document = await open(wiring({
+      update: () => ({
+        source: 'newplayer0408-jpg/deepseek-harness',
+        channel: 'development',
+        phase: 'ready',
+        latestVersion: 'v0.3',
+        schemaVersion: 1,
+        stored: true,
+      }),
+    }))
+    // The repository is rendered as an `owner/name` pair and the staged file as a symbolic directory,
+    // so a shared report names the source without naming where this machine keeps anything.
+    expect(row(published(), 'community-update-source').value).toBe('newplayer0408-jpg/deepseek-harness')
+    const report = await copyPresented(document)
+    for (const text of [JSON.stringify(published()), report]) {
+      expect(text).not.toContain('https://')
+      expect(text).not.toContain(current().root)
+    }
   })
 
   it('reads the mandatory-update policy out of the manifest the build ships', async () => {

@@ -32,6 +32,7 @@ import {
   type CommunityDiagnosticsEntry,
   type CommunityDiagnosticsFs,
   type CommunityDiagnosticsInput,
+  type CommunityDiagnosticsUpdateFacts,
   type CommunityDiagnosticsView,
 } from './community-diagnostics.ts'
 import {
@@ -69,6 +70,14 @@ export interface DesktopCommunityDiagnosticsOptions {
   readonly locale: () => DesktopLocale
   /** The fork's version facts, or undefined on a build that read none. */
   readonly community: CommunityVersionIdentity | undefined
+  /**
+   * The Community update surface, when this build wired one.
+   *
+   * It is a reader rather than a value because the update state changes while the application runs,
+   * and a report collected after a check must describe the state that check produced.
+   * @returns the update facts, or undefined when no update service exists.
+   */
+  readonly update: () => CommunityDiagnosticsUpdateFacts | undefined
   /** Runtime locations to probe. */
   readonly runtime: CommunityDiagnosticsRuntimePaths
   /** Backend phase at the moment of collection. */
@@ -184,6 +193,13 @@ function rowLabels(messages: DesktopMessages): Readonly<Record<CommunityDiagnost
     'community-version': messages.diagnosticsRowCommunityVersion,
     'upstream-base': messages.diagnosticsRowUpstreamBase,
     'upstream-commit': messages.diagnosticsRowUpstreamCommit,
+    'community-update-source': messages.diagnosticsRowUpdateSource,
+    'community-update-channel': messages.diagnosticsRowUpdateChannel,
+    'community-update-last-check': messages.diagnosticsRowUpdateLastCheck,
+    'community-update-latest': messages.diagnosticsRowUpdateLatest,
+    'community-update-manifest': messages.diagnosticsRowUpdateManifest,
+    'community-update-download': messages.diagnosticsRowUpdateDownload,
+    'community-update-checksum': messages.diagnosticsRowUpdateChecksum,
   }
 }
 
@@ -228,6 +244,7 @@ async function diagnosticsInput(
   const home = options.home ?? resolveDshHome()
   const phase = options.backend()
   const feed = hasUpdateFeed()
+  const update = options.update()
   return {
     variant: DESKTOP_COMMUNITY_VARIANT,
     ...options.community === undefined ? {} : {
@@ -235,6 +252,7 @@ async function diagnosticsInput(
       upstreamBase: options.community.upstreamBase,
       ...options.community.upstreamCommit === undefined ? {} : { upstreamCommit: options.community.upstreamCommit },
     },
+    ...update === undefined ? {} : { update },
     appVersion: app.getVersion(),
     locale: app.getLocale(),
     paths: { home, homeDisplay: dshHomeDisplay(home) },

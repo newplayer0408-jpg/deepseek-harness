@@ -214,7 +214,7 @@ it('answers only its own main frame on the diagnostics page, and only with the c
     copiedLabel: COPY.copied,
     summaryLabels: COPY.summary,
     unavailable: '',
-    summary: { pass: 13, warn: 1, fail: 0, info: 0 },
+    summary: { pass: 20, warn: 1, fail: 0, info: 0 },
   })
   expect(published.rows).toEqual(CHECKS.map(check => ({
     id: check.id, label: `label of ${check.id}`, state: check.state, value: check.value, code: check.code ?? '',
@@ -464,7 +464,7 @@ it('exposes its bridge only on the diagnostics page, with four narrow capabiliti
 })
 
 it('names the page, the channels, and the presentation size the shell window should use', () => {
-  expect(COMMUNITY_DIAGNOSTICS_WINDOW_SIZE).toEqual({ width: 640, height: 740 })
+  expect(COMMUNITY_DIAGNOSTICS_WINDOW_SIZE).toEqual({ width: 640, height: 900 })
   expect(COMMUNITY_DIAGNOSTICS_PAGE).toBe('dsh-app://shell/community-diagnostics.html')
   expect(COMMUNITY_DIAGNOSTICS_IPC).toEqual({
     status: 'dsh-community-diagnostics:status',

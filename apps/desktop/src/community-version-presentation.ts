@@ -40,10 +40,9 @@ export interface DesktopAboutVersions {
  * A release and a development build get the release line alone, unchanged. A community build gets an
  * identity badge, its product version, the upstream base tag it was synced to, the commit that tag
  * named when the build recorded one, the build it installed, and then the two update facts a
- * community user needs: which channel this installation follows, and that no automatic Community
- * update exists yet. The last two belong here rather than in an updater dialog because this is the
- * surface that answers "what am I running" — and because a community build has no update dialog to
- * put them in.
+ * community user needs: which channel this installation follows, and that a Community update is
+ * checked on request rather than installed in the background. The last two belong here rather than in
+ * an updater dialog because this is the surface that answers "what am I running".
  *
  * The commit line is left out rather than blanked when the build recorded none, because the tag is
  * what the fork declares and the commit is derived from it: a build that could not resolve the tag
@@ -69,6 +68,6 @@ export function desktopAboutDetail(messages: DesktopMessages, versions: DesktopA
     ...commit === undefined ? [] : [formatDesktopMessage(messages.aboutUpstreamCommit, { commit })],
     formatDesktopMessage(messages.aboutBuild, { version: versions.build }),
     formatDesktopMessage(messages.aboutUpdateChannel, { channel }),
-    messages.aboutUpdateStatusUnavailable,
+    messages.aboutUpdateStatusManual,
   ].join('\n')
 }

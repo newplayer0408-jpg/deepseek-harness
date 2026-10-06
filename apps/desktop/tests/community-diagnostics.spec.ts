@@ -553,7 +553,7 @@ describe('the collected view', () => {
     expect(view.checks.map(entry => entry.id)).toEqual([...COMMUNITY_DIAGNOSTIC_IDS])
     expect(view.checks.every(entry => entry.value !== '')).toBe(true)
     expect(view.checks.every(entry => entry.state === 'PASS' || entry.state === 'INFO')).toBe(true)
-    expect(view.reportVersion).toBe(2)
+    expect(view.reportVersion).toBe(3)
     expect(view.generated).toBe('2026-09-26T02:00:00.000Z')
     expect(view.bundledDsh).toBe('0.1.7-rc.2')
     expect(view.platform).toBe('win32 10.0.26100 (x64)')

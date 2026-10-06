@@ -42,8 +42,14 @@ import { DESKTOP_COMMUNITY_VARIANT, type DesktopVariant } from './desktop-varian
  * Version 2 appended the three version checks — `community-version`, `upstream-base`, and
  * `upstream-commit` — so one installation now reports a different set of lines than version 1
  * produced. No header field, no line syntax, and no earlier check changed with it.
+ *
+ * Version 3 appended the seven read-only update checks, which describe the Community update surface
+ * rather than the installation: where updates are read from, which channel is followed, what the last
+ * check found, which version it offered, which manifest schema it was written in, whether an
+ * installer is on disk, and whether its digest was verified. They are appended for the same reason
+ * version 2's were, and no earlier line moved.
  */
-export const COMMUNITY_DIAGNOSTICS_REPORT_VERSION = 2
+export const COMMUNITY_DIAGNOSTICS_REPORT_VERSION = 3
 
 /** Placeholder for a fact the collector could not read. */
 const UNKNOWN = 'unknown'
@@ -74,6 +80,13 @@ export const COMMUNITY_DIAGNOSTIC_IDS = [
   'community-version',
   'upstream-base',
   'upstream-commit',
+  'community-update-source',
+  'community-update-channel',
+  'community-update-last-check',
+  'community-update-latest',
+  'community-update-manifest',
+  'community-update-download',
+  'community-update-checksum',
 ] as const
 
 /** Stable identifier of one diagnostic check. */
@@ -141,6 +154,16 @@ export const COMMUNITY_DIAGNOSTIC_CODES = {
   upstreamBaseMissing: 'E-UPSTREAM-BASE-MISSING',
   /** A community build declared no upstream commit this installation could read. */
   upstreamCommitMissing: 'E-UPSTREAM-COMMIT-MISSING',
+  /** A community build declared no release repository, so it has nowhere to read updates from. */
+  updateSourceMissing: 'E-UPDATE-SOURCE-MISSING',
+  /** The last update check failed for a reason the update service reported. */
+  updateLastCheckFailed: 'E-UPDATE-LAST-CHECK-FAILED',
+  /** A downloaded update file is present but its digest was not verified. */
+  updateNotVerified: 'E-UPDATE-NOT-VERIFIED',
+  /** A downloaded update file failed its digest check. */
+  updateChecksumFailed: 'E-UPDATE-CHECKSUM-FAILED',
+  /** This platform has no published Community installer. */
+  updateUnsupportedPlatform: 'E-UPDATE-UNSUPPORTED-PLATFORM',
 } as const
 
 /** One stable code from {@link COMMUNITY_DIAGNOSTIC_CODES}. */
@@ -281,6 +304,29 @@ export interface CommunityDiagnosticsUpdates {
   readonly enabled: boolean
 }
 
+/**
+ * The Community update surface, as the running installation currently reports it.
+ *
+ * Every field is a fact the update service already holds, so the report describes the same state the
+ * user sees rather than a second reading of the network or of the disk. Nothing here carries a URL, a
+ * digest, a path, or a response body: the source is the repository in `owner/repo` form, and the
+ * remaining values are the phase token, the versions, and whether a verified file exists.
+ */
+export interface CommunityDiagnosticsUpdateFacts {
+  /** Release repository updates are read from, in `owner/repo` form; absent when none is declared. */
+  readonly source?: string
+  /** Channel the installation follows: `development`, `release`, or `unknown` when it declared none. */
+  readonly channel: string
+  /** Phase the update service last reported. */
+  readonly phase: string
+  /** Version the last successful check read, when it read one. */
+  readonly latestVersion?: string
+  /** Schema version of the last manifest that validated, when one did. */
+  readonly schemaVersion?: number
+  /** Whether a verified installer is currently on disk. */
+  readonly stored: boolean
+}
+
 /** Session-log telemetry as the running process actually carries it. */
 export interface CommunityDiagnosticsTelemetry {
   /** Effective mode from `$DSH_TELEMETRY_MODE`; undefined when the environment carries none. */
@@ -347,6 +393,14 @@ export interface CommunityDiagnosticsInput {
   readonly upstreamBase?: string
   /** Commit the declared upstream base named, when the running build recorded one. */
   readonly upstreamCommit?: string
+  /**
+   * The Community update surface, when this build has one.
+   *
+   * Absent on a build that wired no update service, which is a different fact from a service that has
+   * not checked yet: the latter reports its own `idle` phase, and the two must not be conflated in a
+   * report a user shares.
+   */
+  readonly update?: CommunityDiagnosticsUpdateFacts
   readonly locale: string
   readonly paths: CommunityDiagnosticsPaths
   readonly resources: CommunityDiagnosticsResources
@@ -994,6 +1048,189 @@ function systemCheck(input: CommunityDiagnosticsInput): CommunityDiagnosticCheck
   return { id: 'system', state: 'INFO', value: `${os} ${release} ${arch}` }
 }
 
+/** A release repository in `owner/name` form, as the release identity declares one. */
+const SAFE_REPOSITORY_LABEL = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/u
+
+/** Channels the update surface distinguishes. */
+const SAFE_UPDATE_CHANNEL = /^(?:development|release|unknown)$/u
+
+/**
+ * Phases the update service reports.
+ *
+ * The list is written out here rather than compiled into one literal because it is longer than a line
+ * may be, and a regex split across lines is not a regex. Keeping it local is deliberate: this module
+ * gates what it reports, so it must not acquire the update service's own runtime to do it.
+ */
+const UPDATE_PHASES = [
+  'idle', 'checking', 'up-to-date', 'update-available', 'downloading', 'downloaded', 'verifying',
+  'ready', 'network-error', 'invalid-manifest', 'download-error', 'checksum-error',
+  'unsupported-platform',
+]
+
+/** One phase token, as the update surface reports one. */
+const SAFE_UPDATE_PHASE = new RegExp(`^(?:${UPDATE_PHASES.join('|')})$`, 'u')
+
+/** How one update phase is reported: its state, its value, and any code for a non-pass condition. */
+function updatePhaseReport(phase: string): { readonly state: CommunityDiagnosticsState; readonly value: string; readonly code?: string } {
+  switch (phase) {
+    case 'idle': return { state: 'INFO', value: 'not checked yet' }
+    case 'checking': return { state: 'INFO', value: 'check in progress' }
+    case 'up-to-date': return { state: 'PASS', value: 'up to date' }
+    case 'update-available': return { state: 'INFO', value: 'update available' }
+    case 'downloading': return { state: 'INFO', value: 'download in progress' }
+    case 'downloaded': return { state: 'INFO', value: 'downloaded, awaiting verification' }
+    case 'verifying': return { state: 'INFO', value: 'verifying' }
+    case 'ready': return { state: 'PASS', value: 'verified and ready' }
+    case 'network-error':
+      return { state: 'FAIL', value: 'failed: unreachable', code: COMMUNITY_DIAGNOSTIC_CODES.updateLastCheckFailed }
+    case 'invalid-manifest':
+      return { state: 'FAIL', value: 'failed: unusable manifest', code: COMMUNITY_DIAGNOSTIC_CODES.updateLastCheckFailed }
+    case 'download-error':
+      return { state: 'FAIL', value: 'failed: download', code: COMMUNITY_DIAGNOSTIC_CODES.updateLastCheckFailed }
+    case 'checksum-error':
+      return { state: 'FAIL', value: 'failed: checksum', code: COMMUNITY_DIAGNOSTIC_CODES.updateChecksumFailed }
+    case 'unsupported-platform':
+      return { state: 'WARN', value: 'no installer for this platform', code: COMMUNITY_DIAGNOSTIC_CODES.updateUnsupportedPlatform }
+    default:
+      return { state: 'WARN', value: UNKNOWN, code: COMMUNITY_DIAGNOSTIC_CODES.updateLastCheckFailed }
+  }
+}
+
+/**
+ * Report where Community updates are read from, as a repository rather than a URL.
+ *
+ * The repository is the fact a support conversation needs, and it is the one update fact that can be
+ * checked against what the build claims to be. A full URL is deliberately not rendered: the manifest
+ * address is derived from this pair, so publishing it would add nothing a reader can act on while
+ * widening what a shared report exposes.
+ * @param input - the collector input.
+ * @returns the community-update-source check.
+ */
+function updateSourceCheck(input: CommunityDiagnosticsInput): CommunityDiagnosticCheck {
+  const id = 'community-update-source'
+  if (input.variant !== DESKTOP_COMMUNITY_VARIANT) return { id, state: 'INFO', value: NOT_COMMUNITY }
+  const update = input.update
+  if (update === undefined) return { id, state: 'INFO', value: 'not configured' }
+  if (update.source === undefined) {
+    return { id, state: 'WARN', value: UNKNOWN, code: COMMUNITY_DIAGNOSTIC_CODES.updateSourceMissing }
+  }
+  const source = gated(update.source, SAFE_REPOSITORY_LABEL, UNKNOWN)
+  return source === UNKNOWN
+    ? { id, state: 'WARN', value: UNKNOWN, code: COMMUNITY_DIAGNOSTIC_CODES.updateSourceMissing }
+    : { id, state: 'PASS', value: source }
+}
+
+/**
+ * Report the channel this installation follows.
+ *
+ * It is the same fact the About surface shows, read from the version the build declares, so a report
+ * and the dialog cannot disagree about which series an installation is on.
+ * @param input - the collector input.
+ * @returns the community-update-channel check.
+ */
+function updateChannelCheck(input: CommunityDiagnosticsInput): CommunityDiagnosticCheck {
+  const id = 'community-update-channel'
+  if (input.variant !== DESKTOP_COMMUNITY_VARIANT) return { id, state: 'INFO', value: NOT_COMMUNITY }
+  const update = input.update
+  if (update === undefined) return { id, state: 'INFO', value: NOT_COMMUNITY }
+  return { id, state: 'INFO', value: gated(update.channel, SAFE_UPDATE_CHANNEL, UNKNOWN) }
+}
+
+/**
+ * Report what the last update check found.
+ *
+ * The phase is reported as a classification rather than as an error message: the update service
+ * already reduced every failure to a phase and a code, and a shared report must not carry the text a
+ * response or a transport produced.
+ * @param input - the collector input.
+ * @returns the community-update-last-check check.
+ */
+function updateLastCheck(input: CommunityDiagnosticsInput): CommunityDiagnosticCheck {
+  const id = 'community-update-last-check'
+  if (input.variant !== DESKTOP_COMMUNITY_VARIANT) return { id, state: 'INFO', value: NOT_COMMUNITY }
+  const update = input.update
+  if (update === undefined) return { id, state: 'INFO', value: NOT_COMMUNITY }
+  const phase = oneLine(update.phase).trim()
+  if (!SAFE_UPDATE_PHASE.test(phase)) {
+    return { id, state: 'WARN', value: UNKNOWN, code: COMMUNITY_DIAGNOSTIC_CODES.updateLastCheckFailed }
+  }
+  const report = updatePhaseReport(phase)
+  return { id, state: report.state, value: report.value, ...report.code === undefined ? {} : { code: report.code } }
+}
+
+/**
+ * Report the newest Community version the last successful check read.
+ *
+ * It is reported separately from the check result because the two answer different questions: one is
+ * whether anything was offered, and this one is what the release line currently is — a fact a user on
+ * the development channel sees without being offered a download.
+ * @param input - the collector input.
+ * @returns the community-update-latest check.
+ */
+function updateLatestCheck(input: CommunityDiagnosticsInput): CommunityDiagnosticCheck {
+  const id = 'community-update-latest'
+  if (input.variant !== DESKTOP_COMMUNITY_VARIANT) return { id, state: 'INFO', value: NOT_COMMUNITY }
+  const update = input.update
+  if (update === undefined || update.latestVersion === undefined) return { id, state: 'INFO', value: UNKNOWN }
+  return { id, state: 'INFO', value: releaseField(update.latestVersion) }
+}
+
+/**
+ * Report the schema version of the last manifest that validated.
+ * @param input - the collector input.
+ * @returns the community-update-manifest check.
+ */
+function updateManifestCheck(input: CommunityDiagnosticsInput): CommunityDiagnosticCheck {
+  const id = 'community-update-manifest'
+  if (input.variant !== DESKTOP_COMMUNITY_VARIANT) return { id, state: 'INFO', value: NOT_COMMUNITY }
+  const schema = input.update?.schemaVersion
+  return { id, state: 'INFO', value: schema === undefined ? UNKNOWN : versionField(String(schema)) }
+}
+
+/**
+ * Report whether a Community installer is on disk, and whether it passed verification.
+ *
+ * The two are one check apart because they are one step apart: a transfer can be in flight, and a
+ * file is only ever promoted after its digest matched, so "on disk" already implies "verified" — and
+ * a checksum failure is reported as a failed verification rather than as an absent file.
+ * @param input - the collector input.
+ * @returns the community-update-download and community-update-checksum checks.
+ */
+function updateDownloadChecks(input: CommunityDiagnosticsInput): readonly CommunityDiagnosticCheck[] {
+  const downloadId = 'community-update-download'
+  const checksumId = 'community-update-checksum'
+  if (input.variant !== DESKTOP_COMMUNITY_VARIANT) {
+    return [
+      { id: downloadId, state: 'INFO', value: NOT_COMMUNITY },
+      { id: checksumId, state: 'INFO', value: NOT_COMMUNITY },
+    ]
+  }
+  const update = input.update
+  if (update === undefined) {
+    return [
+      { id: downloadId, state: 'INFO', value: NOT_COMMUNITY },
+      { id: checksumId, state: 'INFO', value: NOT_COMMUNITY },
+    ]
+  }
+  if (update.phase === 'checksum-error') {
+    return [
+      { id: downloadId, state: 'WARN', value: 'blocked', code: COMMUNITY_DIAGNOSTIC_CODES.updateChecksumFailed },
+      { id: checksumId, state: 'FAIL', value: 'failed', code: COMMUNITY_DIAGNOSTIC_CODES.updateChecksumFailed },
+    ]
+  }
+  if (update.stored) {
+    return [
+      { id: downloadId, state: 'PASS', value: 'verified installer on disk' },
+      { id: checksumId, state: 'PASS', value: 'verified' },
+    ]
+  }
+  const inFlight = update.phase === 'downloading' || update.phase === 'downloaded' || update.phase === 'verifying'
+  return [
+    { id: downloadId, state: 'INFO', value: inFlight ? 'download in progress' : 'no installer on disk' },
+    { id: checksumId, state: 'INFO', value: 'not verified yet' },
+  ]
+}
+
 /**
  * Collect every Phase 1 diagnostic into one deterministic view.
  *
@@ -1023,6 +1260,14 @@ export async function collectCommunityDiagnostics(input: CommunityDiagnosticsInp
     communityVersionCheck(input),
     upstreamBaseCheck(input),
     upstreamCommitCheck(input),
+    // The update checks are appended for the same reason: they describe a surface this report grew
+    // later, and every line an earlier report printed keeps its position.
+    updateSourceCheck(input),
+    updateChannelCheck(input),
+    updateLastCheck(input),
+    updateLatestCheck(input),
+    updateManifestCheck(input),
+    ...updateDownloadChecks(input),
   ]
   return {
     reportVersion: COMMUNITY_DIAGNOSTICS_REPORT_VERSION,

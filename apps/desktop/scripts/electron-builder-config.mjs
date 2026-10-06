@@ -197,6 +197,7 @@ export function createElectronBuilderConfig(
       'lib/welcome/**/*',
       'lib/preload-app.cjs',
       'lib/preload-community-diagnostics.cjs',
+      'lib/preload-community-update.cjs',
       'lib/preload-mandatory.cjs',
       'lib/preload-platform-account.cjs',
       'lib/preload-update-dialog.cjs',
@@ -208,6 +209,9 @@ export function createElectronBuilderConfig(
       // variant is deliberate: the reader gates on the declared variant, so a release carries the
       // file and still reports no community metadata.
       'community-version.json',
+      // The fork's release source travels with the same reasoning: the reader gates on the declared
+      // variant, so a release carries the file and still reads no Community release repository.
+      'community-release.json',
       { from: buildPaths.dsh, to: 'dsh', filter: ['**/*'] },
       // electron-builder excludes a source directory's root node_modules.
       { from: join(buildPaths.dsh, 'node_modules'), to: 'dsh/node_modules', filter: ['**/*'] },

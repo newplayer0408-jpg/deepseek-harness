@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'none'; img-src 'self'">
+    <title></title>
+    <link rel="stylesheet" href="community-update.css">
+  </head>
+  <body class="community-update">
+    <main id="update" hidden>
+      <header>
+        <h1 id="update-title"></h1>
+      </header>
+      <p id="update-status" role="status" aria-live="polite"></p>
+      <p id="update-detail" hidden></p>
+      <div id="update-progress" hidden>
+        <div class="track"><div id="update-progress-fill" class="fill"></div></div>
+        <span id="update-progress-text"></span>
+      </div>
+      <dl id="update-rows"></dl>
+      <p id="update-code" class="code" hidden></p>
+      <footer>
+        <button id="check" class="secondary" type="button" hidden></button>
+        <button id="download" class="primary" type="button" hidden></button>
+        <button id="open-location" class="secondary" type="button" hidden></button>
+        <button id="view-notes" class="secondary" type="button" hidden></button>
+        <button id="close" class="secondary" type="button"></button>
+      </footer>
+    </main>
+    <script src="community-update.js"></script>
+  </body>
+</html>

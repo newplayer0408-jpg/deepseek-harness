@@ -14,7 +14,7 @@
  *
  * The last two lines are the update story, and they are pinned as hard as the version facts: the
  * channel is read from the version line above it so the two cannot disagree, and the status line says
- * only that no automatic Community update exists — never that the build is up to date, which would
+ * only that Community updates are checked on request — never that the build is up to date, which would
  * claim a comparison nobody made.
  */
 import { describe, expect, it } from 'vitest'
@@ -77,7 +77,7 @@ describe('the About detail of a community build', () => {
       `Upstream commit ${RECORDED_COMMIT}`,
       'Build 0.1.7-rc.2.20261004.1',
       'Update channel Development',
-      'Update status: automatic Community updates are unavailable',
+      'Update status: Community updates are checked on request from the application menu',
     ].join('\n'))
   })
 
@@ -89,7 +89,7 @@ describe('the About detail of a community build', () => {
       'Upstream base dsh-v0.1.7-rc.2',
       'Build 0.1.7-rc.2',
       'Update channel Development',
-      'Update status: automatic Community updates are unavailable',
+      'Update status: Community updates are checked on request from the application menu',
     ])
     expect(detail).not.toContain('Upstream commit')
   })
@@ -101,10 +101,11 @@ describe('the About detail of a community build', () => {
     expect(desktopAboutDetail(en, about({ community: released }))).toContain('Update channel Release')
   })
 
-  it('never claims an automatic update is available, on either channel', () => {
+  it('says updates are checked on request rather than claiming a check already happened', () => {
     for (const version of ['v0.2-dev', 'v0.2']) {
       const detail = desktopAboutDetail(en, about({ community: { ...COMMUNITY, version } }))
-      expect(detail).toContain('automatic Community updates are unavailable')
+      expect(detail).toContain('Update status: Community updates are checked on request')
+      // About reports what the build is; it never reports the result of a comparison nobody ran.
       expect(detail).not.toMatch(/up to date|Check for updates/iu)
     }
   })

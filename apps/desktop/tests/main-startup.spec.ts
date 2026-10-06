@@ -9,8 +9,9 @@ import { tmpdir } from 'node:os'
 import type { MenuItemConstructorOptions, MessageBoxOptions } from 'electron'
 import { DESKTOP_IPC, type DesktopUpdateState } from '../src/ipc.ts'
 import { MANDATORY_IPC } from '../src/mandatory-update-ipc.ts'
+import { COMMUNITY_UPDATE_IPC } from '../src/community-update-ipc.ts'
 import { DesktopHostFatalError, DesktopHostUncleanExitError } from '../src/host-process.ts'
-import { en, zh } from '../src/locale.ts'
+import { en, zh, formatDesktopMessage } from '../src/locale.ts'
 import { DesktopUpdatePreparationError } from '../src/update-error.ts'
 import { writeCrashReport } from '../src/crash-report.ts'
 
@@ -329,6 +330,11 @@ vi.mock('node:fs/promises', async (importOriginal) => {
     if (path === join('desktop-test-app', 'community-version.json')) {
       return Promise.resolve(JSON.stringify({ communityVersion: '0.2-dev', upstreamBase: 'dsh-v0.2.0-rc.2' }))
     }
+    // The fork's release source, read the same way and for the same reason: a community build reads
+    // it from the application path rather than importing it, and a release never opens it at all.
+    if (path === join('desktop-test-app', 'community-release.json')) {
+      return Promise.resolve(JSON.stringify({ repository: 'newplayer0408-jpg/deepseek-harness', manifest: 'latest-community.json' }))
+    }
     return encoding === undefined ? original.readFile(path) : original.readFile(path, encoding)
   }) }
 })
@@ -583,9 +589,12 @@ describe('desktop main startup', () => {
       return await readyForUpdate()
     }
 
-    it('replaces the official update check with its own diagnostics in the application menu', async () => {
+    it('replaces the official update check with its own two entries in the application menu', async () => {
       await readyCommunity()
       const labels = applicationMenuItems().map(item => item.label ?? item.role)
+      // The community seat holds the fork's own update window and its diagnostics, and neither of
+      // them is the official check: a release reaches its updater from this same seat.
+      expect(labels).toContain(en.communityUpdateMenu)
       expect(labels).toContain(en.diagnosticsMenu)
       // The regression: a community build offering to install the official product over itself.
       expect(labels).not.toContain(en.checkUpdatesMenu)
@@ -609,22 +618,61 @@ describe('desktop main startup', () => {
       expect(harness.updateCheck).not.toHaveBeenCalled()
     })
 
-    it('answers an update request with the Community explanation instead of a failed official check', async () => {
+    it('answers an update request with its own update window instead of a failed official check', async () => {
       await readyCommunity()
-      harness.dialog.showMessageBox.mockResolvedValueOnce({ response: 0 })
+      harness.dialog.showMessageBox.mockClear()
+      const before = harness.windows.length
       await invoke(DESKTOP_IPC.updatesOpen, 'app')
       await vi.advanceTimersByTimeAsync(0)
       expect(harness.updateCheck).not.toHaveBeenCalled()
+      // The same seat a release reaches the official updater from opens the fork's own window, which
+      // is where a check, a download, and a verification all happen.
+      expect(harness.windows).toHaveLength(before + 1)
+      expect(harness.windows.at(-1)!.urls.at(-1)).toBe('dsh-app://shell/community-update.html')
+      // Never the message box that would have named a failure, and never the failed-check copy.
+      expect(harness.dialog.showMessageBox).not.toHaveBeenCalled()
+    })
+
+    it('opens the same window from the menu entry, without reaching the official updater', async () => {
+      await readyCommunity()
+      harness.dialog.showMessageBox.mockClear()
+      const entry = applicationMenuItems().find(item => item.label === en.communityUpdateMenu)!.click as () => void
+      const before = harness.windows.length
+      entry()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(harness.windows).toHaveLength(before + 1)
+      expect(harness.windows.at(-1)!.urls.at(-1)).toBe('dsh-app://shell/community-update.html')
+      expect(harness.updateCheck).not.toHaveBeenCalled()
+      expect(harness.dialog.showMessageBox).not.toHaveBeenCalled()
+    })
+
+    it('registers its own update channels and no channel of the official updater', async () => {
+      await readyCommunity()
+      await vi.advanceTimersByTimeAsync(0)
+      const { changed, ...requests } = COMMUNITY_UPDATE_IPC
+      // The five request channels are what the isolated document may call, so they are handlers.
+      for (const channel of Object.values(requests)) expect(harness.handlers.has(channel)).toBe(true)
+      // `changed` travels the other way — the shell pushes a presentation down it — so a handler for
+      // it would mean the document could announce its own state to the main process.
+      expect(harness.handlers.has(changed)).toBe(false)
+      // The shell's own updater channels stay registered by the shell and are never consulted; what
+      // this pins is that the community surface brought its own rather than borrowing them.
+      expect(harness.handlers.has(DESKTOP_IPC.updatesOpen)).toBe(true)
+    })
+
+    it('reports the fork\'s own version facts in About, and the progress of no check', async () => {
+      await readyCommunity()
+      harness.dialog.showMessageBox.mockResolvedValueOnce({ response: 0 })
+      ;(applicationMenuItems()[0]!.click as () => void)()
+      await vi.advanceTimersByTimeAsync(0)
       const options = harness.dialog.showMessageBox.mock.lastCall![0] as MessageBoxOptions
-      expect(options.title).toBe(en.aboutCommunityProduct)
-      expect(options.message).toBe(en.communityUpdateMessage)
-      expect(options.detail).toContain('Upstream base dsh-v0.2.0-rc.2')
-      expect(options.detail).toContain('Update channel Development')
-      expect(options.detail).toContain(en.aboutUpdateStatusUnavailable)
-      // Never the copy a check that could not run would have produced, and never its header.
-      const shown = JSON.stringify(options)
-      expect(shown).not.toContain(en.updateCheckFailed)
-      expect(shown).not.toContain(en.updateCheckFailedTitle)
+      // The base tag is the one the mocked version file names, rendered through the shell's own
+      // template: About shows what the file says rather than a constant this build was compiled with.
+      expect(options.detail).toContain(formatDesktopMessage(en.aboutUpstreamBase, { version: 'dsh-v0.2.0-rc.2' }))
+      expect(options.detail).toContain(formatDesktopMessage(en.aboutUpdateChannel, { channel: en.aboutUpdateChannelDevelopment }))
+      expect(options.detail).toContain(en.aboutUpdateStatusManual)
+      // About reports the progress of no check, because it runs none.
+      expect(JSON.stringify(options)).not.toContain(en.updateCheckFailed)
     })
 
     it('holds the Community Diagnostics window behind the update seat instead of the update dialog', async () => {
