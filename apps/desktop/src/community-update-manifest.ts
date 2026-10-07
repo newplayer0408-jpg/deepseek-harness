@@ -141,7 +141,7 @@ function readAsset(value: unknown, identity: CommunityReleaseIdentity): Communit
   if (!isObject(value)) return undefined
   const { fileName, url, sha256, size } = value as Record<string, unknown>
   if (typeof fileName !== 'string' || fileName === '' || fileName.includes('/') || fileName.includes('\\')) return undefined
-  if (typeof url !== 'string' || communityReleaseOrigin(url, identity) !== 'asset') return undefined
+  if (typeof url !== 'string' || communityReleaseOrigin(url, identity) !== 'installer-asset') return undefined
   if (typeof sha256 !== 'string' || !SAFE_SHA256.test(sha256)) return undefined
   if (size === undefined) return { fileName, url, sha256 }
   if (typeof size !== 'number' || !Number.isSafeInteger(size) || size <= 0) return undefined

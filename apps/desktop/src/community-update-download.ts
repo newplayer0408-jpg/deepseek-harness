@@ -10,11 +10,12 @@
  * could be tempted to run.
  *
  * The second is that redirects are a policy rather than a setting. A release asset is served from
- * GitHub's content host after a redirect, so following none would break every real download; and
- * following any would let the host decide where this installation fetches an installer from. So each
- * hop is resolved against the current URL and checked against {@link communityRedirectAllowed}, which
- * admits only the repository's own release path and GitHub's asset hosts — and the chain is capped,
- * so a redirect loop ends as a refusal rather than as an endless read.
+ * GitHub's content host after a redirect, and the stable manifest address is answered with its
+ * versioned twin before that, so following none would break every real download; and following any
+ * would let the host decide where this installation fetches an installer from. So each hop is
+ * resolved against the current URL and checked against {@link communityRedirectAllowed}, which
+ * admits only the repository's own release addresses and GitHub's asset hosts — and the chain is
+ * capped, so a redirect loop ends as a refusal rather than as an endless read.
  *
  * The network itself arrives through {@link CommunityUpdateTransport}, because that is what makes
  * every rule above testable without a socket. The real transport lives beside the shell's own
@@ -37,9 +38,11 @@ import {
 /**
  * How many redirects one request may follow.
  *
- * GitHub needs one hop from the release path to its asset host, and the internal moves it performs
- * add at most one more. A larger number would only give a misconfigured or hostile endpoint more
- * room, so the cap is stated rather than left to the transport.
+ * A release asset needs one hop from the release path to GitHub's content host. The manifest address
+ * needs two, because GitHub answers the stable `latest/download` address with the versioned asset
+ * path first and only then serves the bytes. The internal moves the service performs add at most one
+ * more. A larger number would only give a misconfigured or hostile endpoint more room, so the cap is
+ * stated rather than left to the transport.
  */
 export const COMMUNITY_UPDATE_MAX_REDIRECTS = 4
 
@@ -206,7 +209,9 @@ type OpenResponseResult =
  *
  * The first URL is checked as strictly as any redirect target: a caller is trusted because it built
  * the URL from the same identity this function is given, but checking it here means the guarantee
- * holds even if a future caller passes a URL from somewhere else.
+ * holds even if a future caller passes a URL from somewhere else. A download may therefore start at
+ * the stable manifest address or at a release's own installer asset, and nowhere else — GitHub's
+ * content host is reached only by following a redirect this policy approved.
  * @param transport - the HTTP seam.
  * @param url - the absolute HTTPS URL to read.
  * @param identity - the fork's release identity.
@@ -220,7 +225,7 @@ async function openCommunityResponse(
   limit: number | undefined,
 ): Promise<OpenResponseResult> {
   const origin = communityReleaseOrigin(url, identity)
-  if (origin !== 'manifest' && origin !== 'asset') return { kind: 'failed', fault: 'redirect-refused' }
+  if (origin !== 'manifest' && origin !== 'installer-asset') return { kind: 'failed', fault: 'redirect-refused' }
   let current = url
   for (let hop = 0; hop <= COMMUNITY_UPDATE_MAX_REDIRECTS; hop += 1) {
     const reply = await requestOrFail(transport, current, limit)

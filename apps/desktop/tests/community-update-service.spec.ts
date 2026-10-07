@@ -29,6 +29,7 @@ import {
 import type { CommunityUpdateReply, CommunityUpdateTransport } from '../src/community-update-download.ts'
 import type { CommunityVersionIdentity } from '../src/community-version.ts'
 import {
+  COMMUNITY_ASSET_HOSTS,
   communityAssetUrl,
   communityManifestUrl,
   communityReleasesUrl,
@@ -214,6 +215,39 @@ describe('checking for an update', () => {
   it('reports the release line as the latest when the running build is on it', async () => {
     const state = await service({ text: manifestBody({ version: '0.2' }), community: RELEASE }).service.check()
     expect(state).toMatchObject({ phase: 'up-to-date', latestVersion: 'v0.2', manifestSchema: 1, channel: 'release' })
+  })
+
+  it('reaches up-to-date through the redirect chain a published release really answers with', async () => {
+    // The failure this pins, end to end: Community v0.2 published, its manifest naming the same
+    // version the installation runs, and GitHub answering in two hops. Before the versioned manifest
+    // address was classified apart from an installer asset, the first hop was refused — so a build
+    // that was up to date reported `network-error` for a release that was published and reachable.
+    const manifest = communityManifestUrl(IDENTITY)
+    const versioned = `https://github.com/${IDENTITY.repository}/releases/download/community-v0.2/${IDENTITY.manifest}`
+    const served = `https://${COMMUNITY_ASSET_HOSTS[2]}/${IDENTITY.repository}/${IDENTITY.manifest}`
+    const asked: string[] = []
+    const chained: CommunityUpdateTransport = {
+      request: async (url: string): Promise<CommunityUpdateReply> => {
+        asked.push(url)
+        if (url === manifest) return { kind: 'redirect', status: 302, location: versioned }
+        if (url === versioned) return { kind: 'redirect', status: 302, location: served }
+        if (url === served) return { kind: 'body', status: 200, body: chunks(manifestBody({ version: '0.2' })) }
+        throw new Error(`unexpected request for ${url}`)
+      },
+    }
+    const instance = service({ transport: chained, community: RELEASE })
+    const state = await instance.service.check()
+    expect(state).toMatchObject({
+      phase: 'up-to-date',
+      currentVersion: 'v0.2',
+      latestVersion: 'v0.2',
+      channel: 'release',
+      source: IDENTITY.repository,
+    })
+    // Neither of the two failures the surface could have shown instead.
+    expect(state.fault).toBeUndefined()
+    expect(instance.phases).toEqual(['checking', 'up-to-date'])
+    expect(asked).toEqual([manifest, versioned, served])
   })
 
   it('offers a newer stable release, with the facts the surface shows beside it', async () => {

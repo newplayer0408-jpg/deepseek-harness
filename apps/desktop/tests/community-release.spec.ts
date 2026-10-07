@@ -45,6 +45,9 @@ const IDENTITY: CommunityReleaseIdentity = SHIPPED
 /** Every URL one repository owns, keyed by what it is. */
 const OWNED_URLS = {
   manifest: communityManifestUrl(IDENTITY),
+  // The versioned address is GitHub's own, not one this fork's URL builders produce: no function
+  // here creates it, because it is only ever a redirect target rather than a download to start.
+  'manifest-asset': `https://${COMMUNITY_RELEASE_HOST}/${SHIPPED.repository}/releases/download/community-v0.2/${SHIPPED.manifest}`,
   asset: communityAssetUrl(IDENTITY, 'community-v0.2', 'DeepSeek-Harness-Community-v0.2-Windows-x64.exe')!,
   'release-page': communityReleasesUrl(IDENTITY),
 } as const
@@ -138,12 +141,34 @@ describe('the addresses an installation may read', () => {
 
   it('classifies each address this repository owns', () => {
     expect(communityReleaseOrigin(OWNED_URLS.manifest, IDENTITY)).toBe('manifest')
-    expect(communityReleaseOrigin(OWNED_URLS.asset, IDENTITY)).toBe('asset')
+    expect(communityReleaseOrigin(OWNED_URLS['manifest-asset'], IDENTITY)).toBe('manifest-asset')
+    expect(communityReleaseOrigin(OWNED_URLS.asset, IDENTITY)).toBe('installer-asset')
     expect(communityReleaseOrigin(OWNED_URLS['release-page'], IDENTITY)).toBe('release-page')
     expect(communityReleaseOrigin(`${communityReleasesUrl(IDENTITY)}/tag/community-v0.2`, IDENTITY)).toBe('release-page')
     expect(communityReleaseOrigin(`https://${COMMUNITY_ASSET_HOSTS[0]}/${SHIPPED.repository}/x.exe`, IDENTITY)).toBe('asset-host')
     // A manifest name the identity does not declare is a page, not a manifest.
     expect(communityReleaseOrigin(`${communityReleasesUrl(IDENTITY)}/latest/download/other.json`, IDENTITY)).toBe('release-page')
+  })
+
+  it('reads a versioned manifest name as a manifest only inside a Community release', () => {
+    // The versioned address is trusted as the manifest's twin, so it is the one classification that
+    // has to check the tag rather than the file name alone: outside the fork's own tag grammar there
+    // is no versioned release for the name to belong to, and a path that names one anyway would
+    // otherwise borrow the trust the twin carries.
+    const versioned = (tag: string, file: string): string =>
+      `https://${COMMUNITY_RELEASE_HOST}/${SHIPPED.repository}/releases/download/${tag}/${file}`
+    expect(communityReleaseOrigin(versioned('community-v0.2', SHIPPED.manifest), IDENTITY)).toBe('manifest-asset')
+    expect(communityReleaseOrigin(versioned('community-v12.3456.78901', SHIPPED.manifest), IDENTITY)).toBe('manifest-asset')
+    for (const tag of [
+      'not-a-community-tag',
+      'v0.2',
+      'dsh-v0.2.0-rc.2',
+      'community-v',
+      'community-v0.2/../../evil',
+      'refs/heads/main',
+    ]) {
+      expect(communityReleaseOrigin(versioned(tag, SHIPPED.manifest), IDENTITY), tag).toBe('release-page')
+    }
   })
 
   it('refuses every address that is not this repository\'s own', () => {
@@ -171,7 +196,8 @@ describe('the addresses an installation may read', () => {
     const repository = SHIPPED.repository
     const notDownloads: readonly string[] = [
       // A different file name in the manifest position, and a path that tries to climb out of the
-      // release directory. Neither is fetched: the download path admits `manifest` and `asset` only.
+      // release directory. Neither is fetched: the download path admits `manifest` and
+      // `installer-asset` only.
       `https://${COMMUNITY_RELEASE_HOST}/${repository}/releases/latest/download/planted.json`,
       `https://${COMMUNITY_RELEASE_HOST}/${repository}/releases/latest/download/..%2f..%2f..%2fdeepseek-ai%2fdeepseek-harness%2freleases%2flatest%2fdownload%2flatest-community.json`,
       `https://${COMMUNITY_RELEASE_HOST}/${repository}/releases/download/community-v0.2/`,
@@ -180,23 +206,95 @@ describe('the addresses an installation may read', () => {
     for (const url of notDownloads) {
       const origin = communityReleaseOrigin(url, IDENTITY)
       expect(origin).not.toBe('manifest')
-      expect(origin).not.toBe('asset')
+      expect(origin).not.toBe('manifest-asset')
+      expect(origin).not.toBe('installer-asset')
     }
   })
 
-  it('follows exactly one hop, from a release address into the asset host', () => {
-    const assetHost = `https://${COMMUNITY_ASSET_HOSTS[0]}/${SHIPPED.repository}/x.exe`
+  it('admits exactly the hops a GitHub release needs, and no others', () => {
+    // Every classification against every other one, so the policy is pinned as a whole rather than
+    // sampled: a rule that widened the allowlist would have to answer to one of these 36 pairs.
+    const urls: Readonly<Record<string, string>> = {
+      manifest: OWNED_URLS.manifest,
+      'manifest-asset': OWNED_URLS['manifest-asset'],
+      'installer-asset': OWNED_URLS.asset,
+      'release-page': OWNED_URLS['release-page'],
+      'asset-host': `https://${COMMUNITY_ASSET_HOSTS[0]}/${SHIPPED.repository}/x.exe`,
+      unknown: 'https://evil.test/x.exe',
+    }
+    const allowed = new Set([
+      'manifest->manifest-asset',
+      'manifest-asset->asset-host',
+      'installer-asset->asset-host',
+      'asset-host->asset-host',
+    ])
+    for (const [from, fromUrl] of Object.entries(urls)) {
+      for (const [to, toUrl] of Object.entries(urls)) {
+        expect(communityRedirectAllowed(fromUrl, toUrl, IDENTITY), `${from} -> ${to}`).toBe(allowed.has(`${from}->${to}`))
+      }
+    }
+  })
+
+  it('follows the chain GitHub really answers the stable manifest address with', () => {
+    // Recorded from the published Community v0.2 release, in order: the stable address, the versioned
+    // address inside the release's own tag, then the content host that serves the bytes. Before the
+    // two addresses were classified apart, the first of these two hops was refused and the client
+    // reported `redirect-refused` for a chain GitHub itself had just answered.
+    const assetHost = `https://${COMMUNITY_ASSET_HOSTS[0]}/github-production-release-asset/1386593265/f15f5349?sp=r&sig=redacted`
+    expect(communityRedirectAllowed(OWNED_URLS.manifest, OWNED_URLS['manifest-asset'], IDENTITY)).toBe(true)
+    expect(communityRedirectAllowed(OWNED_URLS['manifest-asset'], assetHost, IDENTITY)).toBe(true)
+    // The content host is reached by following a release address, never straight from the stable one.
+    expect(communityRedirectAllowed(OWNED_URLS.manifest, assetHost, IDENTITY)).toBe(false)
+    // The installer's own chain is the second hop alone.
     expect(communityRedirectAllowed(OWNED_URLS.asset, assetHost, IDENTITY)).toBe(true)
-    expect(communityRedirectAllowed(OWNED_URLS.manifest, assetHost, IDENTITY)).toBe(true)
-    // Between two asset hosts, when the service moves a download internally.
+  })
+
+  it('refuses a manifest that redirects anywhere but its own versioned twin', () => {
+    const at = (path: string): string => `https://${COMMUNITY_RELEASE_HOST}${path}`
+    const refusals: readonly string[] = [
+      // Another asset of the same release, including the installer that release publishes.
+      `/${SHIPPED.repository}/releases/download/community-v0.2/DeepSeek-Harness-Community-v0.2-Windows-x64.exe`,
+      `/${SHIPPED.repository}/releases/download/community-v0.2/other.json`,
+      `/${SHIPPED.repository}/releases/download/community-v0.2/SHA256SUMS.txt`,
+      // Another repository, and the upstream one this fork synced from.
+      `/other/repo/releases/download/community-v0.2/${SHIPPED.manifest}`,
+      `/deepseek-ai/deepseek-harness/releases/download/community-v0.2/${SHIPPED.manifest}`,
+      // A release path that is not a Community release.
+      `/${SHIPPED.repository}/releases/download/not-a-community-tag/${SHIPPED.manifest}`,
+      `/${SHIPPED.repository}/releases/download/refs/heads/${SHIPPED.manifest}`,
+      // A bare github.com path, the release listing, and the manifest's own address.
+      `/${SHIPPED.repository}/releases`,
+      `/${SHIPPED.repository}/issues`,
+      `/${SHIPPED.repository}/releases/latest/download/${SHIPPED.manifest}`,
+    ]
+    for (const path of refusals) {
+      expect(communityRedirectAllowed(OWNED_URLS.manifest, at(path), IDENTITY), path).toBe(false)
+    }
+    for (const url of [
+      at(`/${SHIPPED.repository}/releases/download/community-v0.2/${SHIPPED.manifest}`).replace('https:', 'http:'),
+      `https://user:token@${COMMUNITY_RELEASE_HOST}/${SHIPPED.repository}/releases/download/community-v0.2/${SHIPPED.manifest}`,
+      `https://${COMMUNITY_RELEASE_HOST}.evil.test/${SHIPPED.repository}/releases/download/community-v0.2/${SHIPPED.manifest}`,
+      `https://evil.test/${SHIPPED.repository}/releases/download/community-v0.2/${SHIPPED.manifest}`,
+      'file:///C:/Users/secret/latest-community.json',
+      '',
+    ]) {
+      expect(communityRedirectAllowed(OWNED_URLS.manifest, url, IDENTITY), url).toBe(false)
+    }
+  })
+
+  it('refuses an asset that redirects anywhere but the content hosts', () => {
+    const assetHost = `https://${COMMUNITY_ASSET_HOSTS[0]}/${SHIPPED.repository}/x.exe`
+    // Between two content hosts, when the service moves a download internally.
     expect(communityRedirectAllowed(assetHost, `https://${COMMUNITY_ASSET_HOSTS[1]}/${SHIPPED.repository}/x.exe`, IDENTITY)).toBe(true)
     // Anywhere else, including back into the repository and out to a third party.
     expect(communityRedirectAllowed(OWNED_URLS.asset, OWNED_URLS.manifest, IDENTITY)).toBe(false)
     expect(communityRedirectAllowed(OWNED_URLS.asset, OWNED_URLS['release-page'], IDENTITY)).toBe(false)
     expect(communityRedirectAllowed(OWNED_URLS.asset, 'https://evil.test/x.exe', IDENTITY)).toBe(false)
     expect(communityRedirectAllowed(OWNED_URLS.asset, `http://${COMMUNITY_ASSET_HOSTS[0]}/x.exe`, IDENTITY)).toBe(false)
+    expect(communityRedirectAllowed(assetHost, 'https://evil.test/x.exe', IDENTITY)).toBe(false)
     // A hop from a URL this repository does not own is refused whatever it points at, so an
     // unacceptable first response can never be laundered into an acceptable second one.
     expect(communityRedirectAllowed('https://evil.test/x.exe', assetHost, IDENTITY)).toBe(false)
+    expect(communityRedirectAllowed('https://evil.test/x.exe', OWNED_URLS['manifest-asset'], IDENTITY)).toBe(false)
   })
 })

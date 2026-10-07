@@ -52,6 +52,24 @@ const ASSET_URL = communityAssetUrl(IDENTITY, 'community-v0.2', ASSET_NAME)!
 /** The address a release asset really redirects to. */
 const ASSET_HOST_URL = `https://${COMMUNITY_ASSET_HOSTS[0]}/newplayer0408-jpg/deepseek-harness/${ASSET_NAME}`
 
+/**
+ * The versioned address GitHub answers the stable manifest address with, as the published release
+ * answered it.
+ *
+ * It is written here rather than built by any function in the module under test, because nothing in
+ * this fork composes it: it exists only as a redirect target GitHub itself names.
+ */
+const VERSIONED_MANIFEST_URL = `https://github.com/${IDENTITY.repository}/releases/download/community-v0.2/${IDENTITY.manifest}`
+
+/**
+ * The content host address that versioned manifest really redirects to, host and query included.
+ *
+ * The signed query string is the recorded shape with its signature replaced, so the hop is the real
+ * one without carrying a live credential. The replacement is deliberately free of characters a URL
+ * normalisation would re-encode, so the address a case scripts is the address the client resolves.
+ */
+const MANIFEST_ASSET_HOST_URL = 'https://release-assets.githubusercontent.com/github-production-release-asset/1386593265/f15f5349-cde9-4030-a64d-41eff769b844?sp=r&sv=2018-11-09&sr=b&spr=https&sig=REDACTED'
+
 /** Bytes standing in for an installer, and the digest the manifest would record for them. */
 const BYTES = Buffer.from('a small installer, standing in for a 287 MB one')
 const DIGEST = createHash('sha256').update(BYTES).digest('hex')
@@ -207,6 +225,83 @@ describe('reading the manifest', () => {
         .toEqual({ kind: 'unreachable', fault: 'redirect-refused' })
       expect(unreachable.asked).toEqual([])
     }
+  })
+})
+
+/**
+ * The chain GitHub really answers the stable manifest address with.
+ *
+ * This is the regression the release exposed. GitHub does not serve the asset from the stable
+ * address in one hop: it first redirects to the release's own versioned path on `github.com`, and
+ * only that path redirects to the content host. A policy that admits the second hop but not the
+ * first rejects a chain GitHub just answered, which is exactly what `redirect-refused` reported for
+ * an installation whose manifest was published and reachable.
+ */
+describe('the redirect chain GitHub really answers', () => {
+  it('reads a published manifest through the versioned address, rather than refusing the first hop', async () => {
+    const transport = transportFor({
+      [communityManifestUrl(IDENTITY)]: { kind: 'redirect', status: 302, location: VERSIONED_MANIFEST_URL },
+      [VERSIONED_MANIFEST_URL]: { kind: 'redirect', status: 302, location: MANIFEST_ASSET_HOST_URL },
+      [MANIFEST_ASSET_HOST_URL]: { kind: 'body', status: 200, body: chunks(manifestBody()) },
+    })
+    const result = await fetchCommunityUpdateManifest(transport, communityManifestUrl(IDENTITY), IDENTITY, { os: 'win32', arch: 'x64' })
+    expect(result).toMatchObject({ kind: 'valid', manifest: { version: '0.2', channel: 'stable' } })
+    // Both hops were followed, in order, and no address outside the chain was contacted.
+    expect(transport.asked).toEqual([communityManifestUrl(IDENTITY), VERSIONED_MANIFEST_URL, MANIFEST_ASSET_HOST_URL])
+  })
+
+  it('refuses the same chain when its first hop names the installer instead of the manifest', async () => {
+    // The versioned manifest address is trusted as the manifest's twin, so the file name in it is
+    // part of the decision: a release's installer is not a document this client may start from.
+    const transport = transportFor({
+      [communityManifestUrl(IDENTITY)]: { kind: 'redirect', status: 302, location: ASSET_URL },
+      [ASSET_URL]: { kind: 'body', status: 200, body: chunks(BYTES) },
+    })
+    expect(await fetchCommunityUpdateManifest(transport, communityManifestUrl(IDENTITY), IDENTITY, { os: 'win32', arch: 'x64' }))
+      .toEqual({ kind: 'unreachable', fault: 'redirect-refused' })
+    expect(transport.asked).toEqual([communityManifestUrl(IDENTITY)])
+  })
+
+  it('refuses a versioned manifest address outside the fork\'s own release tags', async () => {
+    for (const tag of ['not-a-community-tag', 'dsh-v0.2.0-rc.2', 'refs/heads/main']) {
+      const level = `https://github.com/${IDENTITY.repository}/releases/download/${tag}/${IDENTITY.manifest}`
+      const transport = transportFor({
+        [communityManifestUrl(IDENTITY)]: { kind: 'redirect', status: 302, location: level },
+        [level]: { kind: 'body', status: 200, body: chunks(manifestBody()) },
+      })
+      expect(await fetchCommunityUpdateManifest(transport, communityManifestUrl(IDENTITY), IDENTITY, { os: 'win32', arch: 'x64' }), tag)
+        .toEqual({ kind: 'unreachable', fault: 'redirect-refused' })
+      expect(transport.asked).toEqual([communityManifestUrl(IDENTITY)])
+    }
+  })
+
+  it('refuses a versioned manifest address belonging to another repository', async () => {
+    const elsewhere = 'https://github.com/other/repo/releases/download/community-v0.2/latest-community.json'
+    const transport = transportFor({
+      [communityManifestUrl(IDENTITY)]: { kind: 'redirect', status: 302, location: elsewhere },
+      [elsewhere]: { kind: 'body', status: 200, body: chunks(manifestBody()) },
+    })
+    expect(await fetchCommunityUpdateManifest(transport, communityManifestUrl(IDENTITY), IDENTITY, { os: 'win32', arch: 'x64' }))
+      .toEqual({ kind: 'unreachable', fault: 'redirect-refused' })
+    expect(transport.asked).toEqual([communityManifestUrl(IDENTITY)])
+  })
+
+  it('follows both hops for an installer, and still refuses one that leaves the repository', async () => {
+    const transport = transportFor({
+      [ASSET_URL]: { kind: 'redirect', status: 302, location: ASSET_HOST_URL },
+      [ASSET_HOST_URL]: { kind: 'body', status: 200, body: chunks(BYTES) },
+    })
+    expect(await downloadCommunityUpdateAsset(transport, IDENTITY, asset(), sink()))
+      .toMatchObject({ kind: 'transferred', transfer: { sha256: DIGEST } })
+    expect(transport.asked).toEqual([ASSET_URL, ASSET_HOST_URL])
+    // The installer's asset address may not be redirected back into a document of the release.
+    const back = transportFor({
+      [ASSET_URL]: { kind: 'redirect', status: 302, location: VERSIONED_MANIFEST_URL },
+      [VERSIONED_MANIFEST_URL]: { kind: 'body', status: 200, body: chunks(manifestBody()) },
+    })
+    expect(await downloadCommunityUpdateAsset(back, IDENTITY, asset(), sink()))
+      .toEqual({ kind: 'failed', fault: 'redirect-refused' })
+    expect(back.asked).toEqual([ASSET_URL])
   })
 })
 

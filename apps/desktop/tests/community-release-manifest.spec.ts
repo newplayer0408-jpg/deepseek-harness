@@ -139,7 +139,7 @@ describe('the manifest a release publishes', () => {
     expect(manifest.releaseNotesUrl).toBe(communityReleaseLocation(IDENTITY, '0.2', ASSET_NAME)!.releaseUrl)
     // And the client classifies the published asset address as its own release asset, which is the
     // condition it must pass before any download may start.
-    expect(communityReleaseOrigin(manifest.windows.x64.url, IDENTITY)).toBe('asset')
+    expect(communityReleaseOrigin(manifest.windows.x64.url, IDENTITY)).toBe('installer-asset')
     // The manifest the release publishes is read through the stable alias, because that is the only
     // address a client can hold before any release exists. Both halves are pinned: the exact address,
     // and that the client recognises it as this repository's manifest.

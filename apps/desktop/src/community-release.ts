@@ -80,12 +80,19 @@ export interface CommunityReleaseIdentity {
 /**
  * What one URL is, relative to a declared repository.
  *
+ * The two download addresses are separate values rather than one asset value with a flag, because
+ * they are trusted differently. `manifest` is the stable address a check asks for. `manifest-asset`
+ * is the versioned address GitHub answers that check with, and it is only ever a redirect target:
+ * naming one value for both is what let GitHub's own first hop read as a move to an unrelated asset.
+ * `installer-asset` is the file the manifest selected, which a download starts from directly.
+ *
  * `unknown` is a value rather than a throw: a URL that is not the repository's is exactly the case a
  * caller has to refuse, and naming that outcome keeps the refusal testable.
  */
 export type CommunityReleaseOrigin =
   | 'manifest'
-  | 'asset'
+  | 'manifest-asset'
+  | 'installer-asset'
   | 'release-page'
   | 'asset-host'
   | 'unknown'
@@ -204,19 +211,42 @@ export function communityReleaseOrigin(url: string, identity: CommunityReleaseId
   if (rest.length === 3 && rest[0] === 'latest' && rest[1] === 'download' && rest[2] === identity.manifest) {
     return 'manifest'
   }
-  if (rest.length === 3 && rest[0] === 'download') return 'asset'
+  // One release's asset directory, `releases/download/<tag>/<file>`. The tag is part of the test
+  // rather than taken on trust: a path that is not inside a Community release has no versioned
+  // manifest to be, so reading its file as the manifest would let an address outside the fork's own
+  // tag grammar buy the trust that value carries.
+  if (rest.length === 3 && rest[0] === 'download' && SAFE_RELEASE_TAG.test(rest[1] ?? '')) {
+    return rest[2] === identity.manifest ? 'manifest-asset' : 'installer-asset'
+  }
   return 'release-page'
+}
+
+/**
+ * The redirects a download may follow, as one table.
+ *
+ * GitHub answers the stable manifest address with its versioned twin, and answers any release asset
+ * with a signed address on its content host, so those are the moves that exist in practice. Each is
+ * written out rather than derived from a rule, because an allowlist expressed as conditions is one a
+ * later edit can widen without noticing; a table is what makes `manifest -> installer-asset` absent
+ * from the policy rather than merely unreached by it.
+ */
+const COMMUNITY_ALLOWED_REDIRECTS: Readonly<Partial<Record<CommunityReleaseOrigin, readonly CommunityReleaseOrigin[]>>> = {
+  manifest: ['manifest-asset'],
+  'manifest-asset': ['asset-host'],
+  'installer-asset': ['asset-host'],
+  'asset-host': ['asset-host'],
 }
 
 /**
  * Whether a download may follow one redirect.
  *
- * The policy is deliberately an allowlist with one shape rather than "follow redirects": a manifest
+ * The policy is deliberately an allowlist of named hops rather than "follow redirects": a manifest
  * can name any URL, and a client that followed wherever it was sent would let a compromised or
- * mistyped release file move the update chain to a repository nobody reviewed. Two hops are allowed
- * and nothing else — from the repository's own release path into GitHub's asset host, and between
- * asset hosts when the service moves a download internally. The caller additionally caps the number
- * of hops, so this answers only "is this hop acceptable".
+ * mistyped release file move the update chain to a repository nobody reviewed. Four hops are
+ * allowed and nothing else — GitHub's own move from the stable manifest address to its versioned
+ * twin, the move from a release asset into GitHub's content host, and the internal move between two
+ * content hosts. The caller additionally caps the number of hops, so this answers only "is this hop
+ * acceptable".
  * @param from - the URL that answered with a redirect.
  * @param to - the `location` that redirect named, as it arrived.
  * @param identity - the fork's release identity.
@@ -228,9 +258,8 @@ export function communityRedirectAllowed(
   identity: CommunityReleaseIdentity,
 ): boolean {
   const source = communityReleaseOrigin(from, identity)
-  if (source !== 'manifest' && source !== 'asset' && source !== 'asset-host') return false
   const target = communityReleaseOrigin(to, identity)
-  return target === 'asset-host'
+  return (COMMUNITY_ALLOWED_REDIRECTS[source] ?? []).includes(target)
 }
 
 /**
