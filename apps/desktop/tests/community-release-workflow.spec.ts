@@ -24,6 +24,12 @@ import { fileURLToPath } from 'node:url'
 import * as yaml from 'js-yaml'
 import { describe, expect, it } from 'vitest'
 import { COMMUNITY_RELEASE_REPOSITORY, communityInstallerAssetName } from '../scripts/community-release-manifest.ts'
+import {
+  OFFICIAL_UPSTREAM_REPOSITORY,
+  SAFE_UPSTREAM_BASE,
+  communityUpstreamRoot,
+  readDeclaredUpstreamBase,
+} from '../scripts/community-upstream-base.mjs'
 import { parseCommunityRelease, type CommunityReleaseIdentity } from '../src/community-release.ts'
 import { COMMUNITY_VERSION_FILE } from '../src/community-version.ts'
 
@@ -47,7 +53,10 @@ const DOCUMENT: Record<string, unknown> = (() => {
 })()
 
 /** The version facts the release lane and the running application both read. */
-const DECLARED = JSON.parse(read(join(DESKTOP, COMMUNITY_VERSION_FILE))) as { communityVersion: string }
+const DECLARED = JSON.parse(read(join(DESKTOP, COMMUNITY_VERSION_FILE))) as {
+  communityVersion: string
+  upstreamBase: string
+}
 
 /** The release identity the packaged application reads, from the committed file. */
 const IDENTITY: CommunityReleaseIdentity = parseCommunityRelease(
@@ -128,14 +137,19 @@ describe('the community release lane', () => {
     }
   })
 
-  it('derives the upstream commit from the base tag, because the file records no hash', () => {
-    // A hash committed beside the tag would be a repository reference that drifts with it, so the
-    // workflow resolves the tag in the checkout that holds it — and fetches tags to be able to.
+  it('asks upstream for the base tag instead of reading it out of the checkout', () => {
+    // A fork does not inherit upstream's tags, so the tag the file names is absent from the runner's
+    // clone: a lane that resolved it in this checkout worked on every machine that had added upstream
+    // as a remote and failed on the first one that had not. The commit is therefore fetched and
+    // resolved through the release helper, whose destination is a constant rather than an input.
     expect(WORKFLOW).not.toContain('$json.upstreamCommit')
-    expect(WORKFLOW).toContain('git rev-list -n 1 $base')
-    expect(WORKFLOW).toContain('fetch-tags: true')
+    expect(WORKFLOW).not.toContain('git rev-list')
+    expect(WORKFLOW).not.toContain('git rev-parse')
+    expect(WORKFLOW).toContain('community-upstream-base.mjs fetch')
+    expect(WORKFLOW).toContain('community-upstream-base.mjs resolve')
     // The lane fails rather than publishing a release that cannot name the commit it packages.
     expect(WORKFLOW).toContain('cannot resolve to a commit')
+    expect(script('build', 'Resolve the upstream commit')).toContain("'^[0-9a-f]{40}$'")
   })
 
   it('checks the release tag against the community version before spending the build', () => {
@@ -156,7 +170,7 @@ describe('the community release lane', () => {
     const order = steps('build').map(candidate => String(candidate.name))
     expect(order.indexOf('Validate the release tag'))
       .toBeLessThan(order.indexOf('Package the community Windows x64 installer'))
-    expect(order.indexOf('Validate the release tag')).toBeGreaterThan(order.indexOf('Read the community version'))
+    expect(order.indexOf('Validate the release tag')).toBeGreaterThan(order.indexOf('Read Community release metadata'))
   })
 
   it('publishes under the tag it validated, and never re-derives one', () => {
@@ -239,6 +253,75 @@ describe('the community release lane', () => {
     expect(WORKFLOW).toContain('### Known limitations')
     for (const limitation of ['needs one manual install', 'cannot run at the same time', 'no automatic or background installation']) {
       expect(WORKFLOW).toContain(limitation)
+    }
+  })
+})
+
+/**
+ * Values a hand-edited version file could declare that must never reach a Git command line.
+ *
+ * Whitespace, shell metacharacters, a `refs/heads/*` pattern, a revision expression, a URL, and a
+ * peeled-commit expression are each a way of turning a data file's contents into arguments or into
+ * something other than one upstream release tag.
+ */
+const UNUSABLE_UPSTREAM_BASES = [
+  '',
+  ' ',
+  'main',
+  'refs/heads/main',
+  'refs/tags/dsh-v0.2.0-rc.2',
+  'dsh-v0.2.0-rc.2 ',
+  ' dsh-v0.2.0-rc.2',
+  'dsh-v0.2.0-rc.2\n--upload-pack=x',
+  'dsh-v0.2.0-rc.2;rm -rf /',
+  'dsh-v0.2.0-rc.2^{commit}',
+  'dsh-v0.2.0-rc.2/../refs/heads/main',
+  'main~1',
+  'v0.2.0-rc.2',
+  '../dsh-v0.2.0-rc.2',
+  'https://github.com/deepseek-ai/deepseek-harness.git',
+]
+
+describe('the upstream base the release lane fetches', () => {
+  it('fetches the pinned tag before resolving it, and before anything is built', () => {
+    const order = steps('build').map(candidate => String(candidate.name))
+    expect(order.indexOf('Fetch the pinned upstream base'))
+      .toBeGreaterThan(order.indexOf('Read Community release metadata'))
+    // Resolving before the fetch would ask a checkout that cannot hold upstream's tags, which is the
+    // failure this split exists to remove.
+    expect(order.indexOf('Resolve the upstream commit'))
+      .toBeGreaterThan(order.indexOf('Fetch the pinned upstream base'))
+    expect(order.indexOf('Resolve the upstream commit')).toBeLessThan(order.indexOf('Validate the release tag'))
+    expect(order.indexOf('Validate the release tag'))
+      .toBeLessThan(order.indexOf('Package the community Windows x64 installer'))
+    const outputs = job('build').outputs
+    if (!isRecord(outputs)) throw new TypeError('the build job must define outputs')
+    // The commit the release notes quote is the one the resolving step produced.
+    expect(outputs.upstream_commit).toBe('${{ steps.upstream-commit.outputs.upstream_commit }}')
+  })
+
+  it('pins the upstream repository, and gives no step a way to name another', () => {
+    expect(OFFICIAL_UPSTREAM_REPOSITORY).toBe('deepseek-ai/deepseek-harness')
+    // The destination is a constant in the helper this lane calls. Nothing in the build lane names a
+    // remote or a repository, so neither the workflow's inputs nor the version file can decide where
+    // a release reads its base from.
+    expect(WORKFLOW).not.toContain('git remote')
+    expect(script('build', 'Fetch the pinned upstream base')).not.toContain('http')
+    for (const candidate of steps('build')) {
+      if (typeof candidate.run !== 'string') continue
+      expect(candidate.run, `${String(candidate.name)} must not name a repository to fetch from`)
+        .not.toContain('github.com')
+    }
+  })
+
+  it('accepts the shape upstream release tags have, and refuses everything else', () => {
+    // The rule the fetch is gated by is the rule the committed file is read with, so the release lane
+    // and the packaging read cannot disagree about what an upstream base may be.
+    expect(readDeclaredUpstreamBase(communityUpstreamRoot())).toBe(DECLARED.upstreamBase)
+    expect(SAFE_UPSTREAM_BASE.test(DECLARED.upstreamBase)).toBe(true)
+    expect(SAFE_UPSTREAM_BASE.test('dsh-v0.2.0-rc.2')).toBe(true)
+    for (const unusable of UNUSABLE_UPSTREAM_BASES) {
+      expect(SAFE_UPSTREAM_BASE.test(unusable), `${JSON.stringify(unusable)} must be refused`).toBe(false)
     }
   })
 })

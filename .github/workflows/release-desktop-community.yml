@@ -21,9 +21,9 @@
 # re-versions upstream's packages and never claims upstream's series. What is *published* carries a
 # third name, `DeepSeek-Harness-Community-v<community version>-Windows-x64.exe`, because the manifest
 # a running installation reads has to name the file the release actually serves. The commit those
-# notes quote is derived from the base tag in this checkout — the file records the tag, not a hash
-# that would drift with it — and the packaging step derives the same commit into the installer's own
-# manifest.
+# notes quote is fetched from the upstream repository and resolved there — the file records the tag,
+# not a hash that would drift with it, and a fork's own clone does not carry upstream's tags — and the
+# packaging step derives the same commit into the installer's own manifest.
 #
 # A release therefore publishes three files, in one order, in the job that has a checkout and a
 # toolchain: the installer under its published name, the update manifest generated from those renamed
@@ -78,7 +78,7 @@ jobs:
       # value nor read the repository at all.
       community_version: ${{ steps.community-version.outputs.version }}
       upstream_base: ${{ steps.community-version.outputs.upstream_base }}
-      upstream_commit: ${{ steps.community-version.outputs.upstream_commit }}
+      upstream_commit: ${{ steps.upstream-commit.outputs.upstream_commit }}
       # The tag this run checked, so the publish lane publishes what the build lane validated and
       # cannot pick up a different value for itself.
       release_tag: ${{ steps.release-tag.outputs.release_tag }}
@@ -90,23 +90,24 @@ jobs:
         with:
           persist-credentials: false
           clean: true
-          # The community version names its upstream base as a tag, and the commit behind that tag is
-          # derived from this checkout rather than committed. A default shallow checkout fetches no
-          # tags, so the tag the release has to resolve would be missing here.
+          # The tag the release records is fetched from upstream below, because a fork's clone holds
+          # this fork's tags and none of upstream's. The packaging step later derives the same commit
+          # from the checkout it packages, which is what keeps the installer's own manifest and the
+          # release notes naming one value.
           fetch-tags: true
 
-      # The community version is validated before anything is built, so a malformed metadata file
-      # stops the run instead of producing an installer that cannot be published under a name the
-      # repository agrees with. The checks mirror the shell's own reader, which is what keeps one
-      # value usable by the application, by this workflow, and by the release notes.
+      # The release facts are read and checked before anything is fetched or built, so a malformed
+      # metadata file stops the run instead of producing an installer that cannot be published under a
+      # name the repository agrees with. The checks mirror the shell's own reader, which is what keeps
+      # one value usable by the application, by this workflow, and by the release notes.
       #
-      # The commit is resolved here rather than read, because the file deliberately does not hold one:
-      # a hash committed beside the tag is a repository reference that drifts the moment the tag moves.
-      # The build derives the same commit through `apps/desktop/scripts/community-upstream-commit.mjs`
-      # and records it in the installer's own manifest, so the release notes and the packaged
-      # application name one value. Unlike the application, which omits a commit it cannot resolve,
-      # this lane fails: a published release has to name what it packages.
-      - name: Read the community version
+      # The base tag is reported by the release helper rather than taken from the file's own text, so
+      # what this job hands on is a value that has already been accepted as an upstream release tag.
+      # That rule is spelled once, in the helper, because the fetch below is gated by the same one.
+      #
+      # The commit is not read here, because the file deliberately does not hold one: a hash committed
+      # beside the tag is a repository reference that drifts the moment the tag moves.
+      - name: Read Community release metadata
         id: community-version
         shell: pwsh
         run: |
@@ -115,17 +116,41 @@ jobs:
           if ($version -notmatch '^\d{1,4}(\.\d{1,5}){0,2}(-[A-Za-z0-9.]{1,32})?$') {
             throw "community-version.json declares an unusable communityVersion: '$version'"
           }
-          $base = [string]$json.upstreamBase
-          if ($base -notmatch '^dsh-v\d') {
-            throw "community-version.json declares an unusable upstreamBase: '$base'"
+          $base = (node apps/desktop/scripts/community-upstream-base.mjs validate | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $base -eq '') {
+            throw 'community-version.json declares an unusable upstreamBase'
           }
-          $commit = [string](git rev-list -n 1 $base | Select-Object -First 1)
-          if ($LASTEXITCODE -ne 0 -or $commit -notmatch '^[0-9a-f]{40}$') {
-            throw "community-version.json names an upstreamBase this checkout cannot resolve to a commit: '$base'"
-          }
-          Write-Output "community version v$version, based on $base at $commit"
+          Write-Output "community version v$version, based on $base"
           "version=$version" >> $env:GITHUB_OUTPUT
           "upstream_base=$base" >> $env:GITHUB_OUTPUT
+
+      # The base tag is not assumed to be in this checkout. Tags are not inherited by a fork, so a
+      # runner's clone of this repository holds this fork's tags and none of upstream's, and reading
+      # the tag out of the checkout passes on every machine that added upstream as a remote and fails
+      # on the first one that did not. The helper fetches that one tag, and only that one, from the
+      # upstream repository — the destination is a constant in the helper, so neither this workflow's
+      # inputs nor the version file can decide where the lane reads a base from, and `--no-tags` keeps
+      # the fetch from pulling upstream's whole tag namespace into the checkout.
+      - name: Fetch the pinned upstream base
+        shell: pwsh
+        run: |
+          node apps/desktop/scripts/community-upstream-base.mjs fetch
+          if ($LASTEXITCODE -ne 0) {
+            throw 'the declared upstream base could not be fetched from the upstream repository'
+          }
+
+      # Resolved from the tag the fetch just placed here, and recorded as a fact rather than a guess.
+      # Unlike the application, which omits a commit it cannot resolve, this lane fails: a published
+      # release has to name the commit its installer was built on.
+      - name: Resolve the upstream commit
+        id: upstream-commit
+        shell: pwsh
+        run: |
+          $commit = (node apps/desktop/scripts/community-upstream-base.mjs resolve | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $commit -notmatch '^[0-9a-f]{40}$') {
+            throw 'community-version.json names an upstreamBase this checkout cannot resolve to a commit'
+          }
+          Write-Output "upstream base commit $commit"
           "upstream_commit=$commit" >> $env:GITHUB_OUTPUT
 
       # The tag is the one published name that arrives as operator input instead of as a committed

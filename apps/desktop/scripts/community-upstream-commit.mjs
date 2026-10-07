@@ -14,12 +14,13 @@
  * has never fetched upstream's tags — answers undefined, and the build is packaged without a commit
  * rather than with an invented one. Nothing here fails a packaging run: the application reports the
  * base it knows and omits the commit it does not, and the fork's release lane is where a missing tag
- * is a failure, because a published release has to name what it packages.
+ * is a failure, because a published release has to name what it packages. That lane does not read
+ * this function: it fetches the tag from upstream first and resolves it strictly through
+ * `community-upstream-base.mjs`, which refuses to continue without a commit.
  */
 
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { readDeclaredUpstreamBase } from './community-upstream-base.mjs'
 
 /**
  * Assembled-manifest field that carries the resolved commit to the application runtime.
@@ -33,41 +34,19 @@ export const UPSTREAM_COMMIT_METADATA = 'dshUpstreamCommit'
 /** Environment variable that carries the resolved commit through one packaging run. */
 export const UPSTREAM_COMMIT_ENV = 'DSH_DESKTOP_UPSTREAM_COMMIT'
 
-/** The committed file that declares the fork's version facts, relative to the repository root. */
-const VERSION_FILE = join('apps', 'desktop', 'community-version.json')
-
-/** An upstream release tag, as upstream names one. */
-const SAFE_UPSTREAM_BASE = /^dsh-v\d{1,4}(?:\.\d{1,5}){0,2}(?:-[A-Za-z0-9.]{1,32})?$/u
-
 /** A full commit hash, as `git rev-parse` prints one. */
 const SAFE_COMMIT = /^[0-9a-f]{40}$/u
 
 /**
- * Read the upstream base tag the fork declares.
- *
- * The tag is gated before it reaches a Git command line, so a hand-edited file cannot turn its own
- * contents into arguments.
- * @param {string} repositoryRoot - Checkout holding the application.
- * @returns {string | undefined} The tag, or undefined when the file is absent or declares none.
- */
-function declaredUpstreamBase(repositoryRoot) {
-  let parsed
-  try {
-    parsed = JSON.parse(readFileSync(join(repositoryRoot, VERSION_FILE), 'utf8'))
-  } catch {
-    return undefined
-  }
-  const base = parsed?.upstreamBase
-  return typeof base === 'string' && SAFE_UPSTREAM_BASE.test(base) ? base : undefined
-}
-
-/**
  * Resolve the commit the declared upstream base names, in the checkout that declares it.
+ *
+ * The declared tag is read, and gated, by the module that also fetches it, so the shape a base has to
+ * have is spelled once for both the packaging read and the release lane's fetch.
  * @param {string} repositoryRoot - Checkout holding both the version file and the tag it names.
  * @returns {string | undefined} The commit, or undefined when the base or its tag cannot be read.
  */
 export function readCommunityUpstreamCommit(repositoryRoot) {
-  const base = declaredUpstreamBase(repositoryRoot)
+  const base = readDeclaredUpstreamBase(repositoryRoot)
   if (base === undefined) return undefined
   let commit
   try {
