@@ -345,10 +345,18 @@ describe('the packaged community application', () => {
   it('keeps the fork\'s own version out of the upstream package manifests', () => {
     // The fork packages upstream's version rather than replacing it, so neither manifest may move to
     // the community series. This is what keeps the installer name honest about what it packages.
+    //
+    // The comparison is anchored rather than a substring search, because the two series legitimately
+    // share a numeric prefix: upstream packages `0.2.0-rc.2` while the fork's own release is `0.2`.
+    // A substring test fires on that shared prefix alone and reports a rewrite that never happened.
+    // Anchoring keeps what the guard is for — upstream must not have been set to the community
+    // version in any spelling the fork gives it — and still catches `0.2`, `v0.2`, and `0.2-dev`,
+    // which is every value the community series can take.
+    const community = DECLARED.communityVersion.replaceAll('.', '\\.')
+    const rewritten = new RegExp(`^v?${community}(?:[-+]|$)`, 'u')
     for (const path of [join(DESKTOP, 'package.json'), join(REPOSITORY, 'package.json')]) {
       const version = manifestVersion(path)
-      expect(version).not.toBe(DECLARED.communityVersion)
-      expect(version).not.toContain(DECLARED.communityVersion)
+      expect(version).not.toMatch(rewritten)
     }
   })
 })
