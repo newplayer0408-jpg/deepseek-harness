@@ -14,6 +14,9 @@
  * channel that accepts a URL, so a document can never direct the main process to fetch somewhere of
  * its own choosing.
  */
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { fileURLToPath, URL as FileURL } from 'node:url'
 import { afterEach, expect, it, vi } from 'vitest'
 import {
   COMMUNITY_UPDATE_IPC,
@@ -464,3 +467,30 @@ it('names the page, the channels, and the window size the shell should use', () 
   // nothing outside this window can reach it.
   for (const channel of Object.values(COMMUNITY_UPDATE_IPC)) expect(channel).toMatch(/^dsh-community-update:/u)
 })
+
+it('builds a preload bundle and packages the document the shell loads', async () => {
+  const desktop = fileURLToPath(new FileURL('..', import.meta.url))
+  const read = (relative: string): string => readFileSync(join(desktop, relative), 'utf8')
+  const tsdown = read('tsdown.config.ts')
+  const preloadEntries = /\(\[([^\]]*'preload-app'[\s\S]*?)\] as const\)/u.exec(tsdown)![1]!
+  expect(preloadEntries).toContain("'preload-community-update'")
+  // The entry name is what the sandboxed-CJS format maps onto the file the shell loads, so the
+  // emitted file name appears nowhere in the build configuration itself.
+  expect(tsdown).toContain('entry: { [name]: `lib/types/${name}.js` }')
+  expect(tsdown).not.toContain('preload-community-update.cjs')
+
+  const { createElectronBuilderConfig } = await import('../scripts/electron-builder-config.mjs')
+  const builder = createElectronBuilderConfig({
+    DSH_DESKTOP_VARIANT: 'community',
+    DSH_DESKTOP_TARGET_PLATFORM: 'win32',
+    DSH_DESKTOP_TARGET_ARCH: 'x64',
+    DSH_DESKTOP_UNSIGNED: '1',
+  }, 'win32', 'x64')
+  // Without the preload the document has no bridge and renders nothing, so its presence in the
+  // packaged file set is the second half of the same contract the window's own cases pin.
+  expect(builder.files).toContain(`lib/${COMMUNITY_UPDATE_PRELOAD}`)
+  // renderer/**/* already carries the page, its stylesheet, and its script.
+  expect(builder.files).toContain('renderer/**/*')
+  // The file set is shipped to every variant by design; it is the reader that gates on the declared
+  // variant, which `community-update.spec.ts` pins for the surface table.
+}, 60_000)

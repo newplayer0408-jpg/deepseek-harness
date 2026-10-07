@@ -25,6 +25,7 @@
 
 import { mkdir, open, readdir, rename, rm, stat, type FileHandle } from 'node:fs/promises'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { BrowserWindow, net, shell, type IncomingMessage } from 'electron'
 import { dshHomeDisplay, resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import type { DesktopLocale } from './locale.ts'
@@ -322,7 +323,11 @@ export function createDesktopCommunityUpdate(options: DesktopCommunityUpdateOpti
     return true
   }
   const window = new DesktopCommunityUpdateWindow({
-    preload: COMMUNITY_UPDATE_PRELOAD,
+    // `webPreferences.preload` is an absolute path or nothing: Electron logs
+    // `preload script must have absolute path` and loads no script at all for a bare file name,
+    // which leaves the document without its bridge and therefore without anything to render. The
+    // bundle emits this module beside the preload, so the module's own directory holds it.
+    preload: join(fileURLToPath(new URL('.', import.meta.url)), COMMUNITY_UPDATE_PRELOAD),
     createWindow: (preload: string, title: string): CommunityUpdateWindowHandle => {
       const created = new BrowserWindow({
         width: COMMUNITY_UPDATE_WINDOW_SIZE.width,

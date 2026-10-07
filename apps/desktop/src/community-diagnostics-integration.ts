@@ -22,6 +22,7 @@ import { existsSync, statSync } from 'node:fs'
 import { readFile, unlink, writeFile } from 'node:fs/promises'
 import { release as osRelease } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { app, BrowserWindow, clipboard } from 'electron'
 import { dshHomeDisplay, resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import type { CommunityVersionIdentity } from './community-version.ts'
@@ -315,7 +316,11 @@ export function createDesktopCommunityDiagnostics(
 ): DesktopCommunityDiagnosticsWindow {
   const fs = options.fs ?? nodeFs()
   return new DesktopCommunityDiagnosticsWindow({
-    preload: COMMUNITY_DIAGNOSTICS_PRELOAD,
+    // `webPreferences.preload` is an absolute path or nothing: Electron logs
+    // `preload script must have absolute path` and loads no script at all for a bare file name,
+    // which leaves the document without its bridge and therefore without anything to render. The
+    // bundle emits this module beside the preload, so the module's own directory holds it.
+    preload: join(fileURLToPath(new URL('.', import.meta.url)), COMMUNITY_DIAGNOSTICS_PRELOAD),
     createWindow: (preload: string, title: string): CommunityDiagnosticsWindowHandle => {
       const created = new BrowserWindow({
         width: COMMUNITY_DIAGNOSTICS_WINDOW_SIZE.width,

@@ -16,7 +16,7 @@
 import { createHash } from 'node:crypto'
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, isAbsolute, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   COMMUNITY_UPDATE_DIRECTORY,
@@ -137,6 +137,13 @@ function wiring(overrides: {
 
 /** The directory the update surface stages into. */
 function updates(): string { return join(home, COMMUNITY_UPDATE_DIRECTORY) }
+
+/** The preload path the window just created was handed, or a loud failure rather than a silent undefined. */
+function createdPreload(): string {
+  const preferences = fixture.windows.at(-1)!.options.webPreferences as { preload?: unknown } | undefined
+  if (typeof preferences?.preload !== 'string') throw new Error('the created window was given no preload path')
+  return preferences.preload
+}
 
 describe('the words the shell supplies', () => {
   it('takes every status line from the dictionary, in the language it was asked for', () => {
@@ -282,7 +289,6 @@ describe('the update surface the application menu opens', () => {
       height: COMMUNITY_UPDATE_WINDOW_SIZE.height,
       show: false,
       webPreferences: {
-        preload: COMMUNITY_UPDATE_PRELOAD,
         nodeIntegration: false,
         contextIsolation: true,
         sandbox: true,
@@ -291,6 +297,18 @@ describe('the update surface the application menu opens', () => {
     })
     // The window loads the shell's own page, which is the only URL its IPC accepts.
     expect(fixture.windows[0]!.loadURL).toHaveBeenCalledWith('dsh-app://shell/community-update.html')
+  })
+
+  it('hands Electron the preload as an absolute path, the only form it loads', () => {
+    wiring().open()
+    const preload = createdPreload()
+    // Electron refuses a relative `webPreferences.preload` rather than resolving it: it logs
+    // `preload script must have absolute path` and loads no script at all. A bare bundled file name
+    // therefore leaves the document with no bridge — `window.dshCommunityUpdate` is undefined, the
+    // document's own script throws on its first call into it, and the window stays blank with a
+    // correct title and no text at all. The name must still be the one the packaging case looks for.
+    expect(isAbsolute(preload)).toBe(true)
+    expect(basename(preload)).toBe(COMMUNITY_UPDATE_PRELOAD)
   })
 
   it('downloads, verifies, promotes, and reveals one installer end to end', async () => {

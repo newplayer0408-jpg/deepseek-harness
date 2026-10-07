@@ -23,7 +23,7 @@
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, isAbsolute, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   COMMUNITY_DIAGNOSTICS_IPC,
@@ -273,13 +273,25 @@ describe('the window the product opens', () => {
       // Showing before the first document paints would flash an empty frame.
       show: false,
       webPreferences: {
-        preload: COMMUNITY_DIAGNOSTICS_PRELOAD,
         nodeIntegration: false,
         contextIsolation: true,
         sandbox: true,
         webSecurity: true,
       },
     })
+  })
+
+  it('hands Electron the preload as an absolute path, the only form it loads', async () => {
+    await open(wiring())
+    const preferences = fixture.windows.at(-1)!.options.webPreferences as { preload?: unknown } | undefined
+    if (typeof preferences?.preload !== 'string') throw new Error('the created window was given no preload path')
+    // Electron refuses a relative `webPreferences.preload` rather than resolving it: it logs
+    // `preload script must have absolute path` and loads no script at all. A bare bundled file name
+    // therefore leaves the document with no bridge — `window.dshCommunityDiagnostics` is undefined,
+    // the document's own script throws on its first call into it, and the window stays blank with a
+    // correct title and no text at all. The name must still be the one the packaging case looks for.
+    expect(isAbsolute(preferences.preload)).toBe(true)
+    expect(basename(preferences.preload)).toBe(COMMUNITY_DIAGNOSTICS_PRELOAD)
   })
 
   it('registers its own three channels and no channel of the shell', () => {
