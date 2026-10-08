@@ -431,6 +431,9 @@ jobs:
           fi
           asset=$(basename "$(ls dist/*.exe)")
           hash=$(sha256sum "dist/$asset" | cut -d' ' -f1)
+          # The "Fixed in this release" section below describes this release and is not derived from
+          # any file, so the next Community release has to replace it: left in place it would let one
+          # release's history stand as another's.
           cat > notes.md <<'NOTES'
           Unofficial community build of DeepSeek Harness. This project and its binary releases are not published, endorsed, or supported by DeepSeek. Based on the open-source DeepSeek Harness project.
 
@@ -439,6 +442,12 @@ jobs:
           Windows x64 only, and unsigned. Verify the download against the checksum below before running it; Windows will warn about an unknown publisher.
 
           This build uses its own application identity, install directory, shortcuts and `~/.dsh-community` home, so it installs beside a DeepSeek release without touching it. It contacts no DeepSeek update or telemetry service: mandatory updates are disabled and session-log telemetry defaults to disabled. `LICENSE` and `THIRD_PARTY_NOTICES.md` ship in the installation under `licenses/`.
+
+          ### Fixed in this release
+
+          - Community update checks no longer fail with `redirect-refused`. The update manifest is served from `releases/latest/download`, an address GitHub answers with two redirects, and the client now follows that chain to the versioned manifest instead of refusing the first hop.
+          - From v0.2.1 on, the Community update chain completes normally: a check reports the running version and the latest published version, and offers a newer stable release when one exists.
+          - Community v0.2 cannot read the release manifest at all, so it does not upgrade itself to v0.2.1. Moving from v0.2 to this release is one manual install.
 
           ### Known limitations
 

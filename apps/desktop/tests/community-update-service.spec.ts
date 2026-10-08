@@ -61,6 +61,9 @@ const DEVELOPMENT: CommunityVersionIdentity = { version: 'v0.2-dev', upstreamBas
 /** The fork's release line. */
 const RELEASE: CommunityVersionIdentity = { version: 'v0.2', upstreamBase: 'dsh-v0.2.0-rc.2' }
 
+/** The frozen hotfix release: what a v0.2.1 build reports as its own version. */
+const HOTFIX: CommunityVersionIdentity = { version: 'v0.2.1', upstreamBase: 'dsh-v0.2.0-rc.2' }
+
 /** A manifest body offering one version and one installer. */
 function manifestBody(overrides: { readonly version?: string; readonly sha256?: string; readonly size?: number } = {}): string {
   return JSON.stringify({
@@ -248,6 +251,51 @@ describe('checking for an update', () => {
     expect(state.fault).toBeUndefined()
     expect(instance.phases).toEqual(['checking', 'up-to-date'])
     expect(asked).toEqual([manifest, versioned, served])
+  })
+
+  it('reaches up-to-date on the frozen v0.2.1 through the same two-hop chain', async () => {
+    // The frozen release, end to end. The installation runs v0.2.1 and the manifest it reaches through
+    // GitHub's two redirects names v0.2.1. A build that could not read the manifest would report a
+    // network failure, and one that read it and compared it wrongly would offer itself an update — so
+    // this case pins both the chain the hotfix unblocked and the comparison at the released version.
+    const manifest = communityManifestUrl(IDENTITY)
+    const versioned = `https://github.com/${IDENTITY.repository}/releases/download/community-v0.2.1/${IDENTITY.manifest}`
+    const served = `https://${COMMUNITY_ASSET_HOSTS[2]}/${IDENTITY.repository}/${IDENTITY.manifest}`
+    const asked: string[] = []
+    const chained: CommunityUpdateTransport = {
+      request: async (url: string): Promise<CommunityUpdateReply> => {
+        asked.push(url)
+        if (url === manifest) return { kind: 'redirect', status: 302, location: versioned }
+        if (url === versioned) return { kind: 'redirect', status: 302, location: served }
+        if (url === served) return { kind: 'body', status: 200, body: chunks(manifestBody({ version: '0.2.1' })) }
+        throw new Error(`unexpected request for ${url}`)
+      },
+    }
+    const instance = service({ transport: chained, community: HOTFIX })
+    const state = await instance.service.check()
+    expect(state).toMatchObject({
+      phase: 'up-to-date',
+      currentVersion: 'v0.2.1',
+      latestVersion: 'v0.2.1',
+      channel: 'release',
+      source: IDENTITY.repository,
+    })
+    expect(state.fault).toBeUndefined()
+    expect(instance.phases).toEqual(['checking', 'up-to-date'])
+    expect(asked).toEqual([manifest, versioned, served])
+  })
+
+  it('offers the next release to a v0.2.1 installation', async () => {
+    // The other half of the hotfix: from v0.2.1 on the chain has to do what a released client needs,
+    // which is to recognise a genuinely newer release rather than only its own version.
+    const instance = service({ text: manifestBody({ version: '0.3' }), community: HOTFIX })
+    expect(await instance.service.check()).toMatchObject({
+      phase: 'update-available',
+      currentVersion: 'v0.2.1',
+      latestVersion: 'v0.3',
+      upstreamBase: 'dsh-v0.2.0-rc.2',
+    })
+    expect(instance.phases).toEqual(['checking', 'update-available'])
   })
 
   it('offers a newer stable release, with the facts the surface shows beside it', async () => {

@@ -285,8 +285,18 @@ describe('what the generator refuses to publish', () => {
   it('never lets a development version become a published manifest, whatever the committed facts are', async () => {
     // The real seam, so this is a statement about the repository as it stands rather than about the
     // fixture: either the fork is frozen and the manifest names a release, or nothing is published.
+    //
+    // The tag and the asset name are derived from the committed version rather than pinned to one
+    // release. This case has to keep meaning "the repository as it stands" across a freeze, and a
+    // pinned pair would turn every version bump into a red that says nothing about the refusal.
     try {
-      const manifest = await buildCommunityReleaseManifest(installer, { tag: TAG, name: ASSET_NAME, target: 'win-x64', publishedAt: PUBLISHED_AT })
+      const version = readCommunityReleaseVersion()
+      const manifest = await buildCommunityReleaseManifest(installer, {
+        tag: `community-v${version}`,
+        name: communityInstallerAssetName(version),
+        target: 'win-x64',
+        publishedAt: PUBLISHED_AT,
+      })
       expect(manifest.version).not.toContain('-')
       expect(manifest.channel).toBe('stable')
     } catch (error) {

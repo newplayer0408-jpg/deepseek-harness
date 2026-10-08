@@ -254,6 +254,13 @@ describe('the community release lane', () => {
     for (const limitation of ['needs one manual install', 'cannot run at the same time', 'no automatic or background installation']) {
       expect(WORKFLOW).toContain(limitation)
     }
+    // v0.2.1 is a hotfix for the update check, and its notes have to say so: what was broken, which
+    // installations it reaches, and that reaching them costs one manual install. The last point is the
+    // one a reader is most likely to assume away, so the notes state that v0.2 does not upgrade itself.
+    expect(WORKFLOW).toContain('### Fixed in this release')
+    for (const fixed of ['redirect-refused', 'From v0.2.1 on', 'does not upgrade itself to v0.2.1']) {
+      expect(WORKFLOW).toContain(fixed)
+    }
   })
 })
 
@@ -430,11 +437,11 @@ describe('the packaged community application', () => {
     // the community series. This is what keeps the installer name honest about what it packages.
     //
     // The comparison is anchored rather than a substring search, because the two series legitimately
-    // share a numeric prefix: upstream packages `0.2.0-rc.2` while the fork's own release is `0.2`.
+    // share a numeric prefix: upstream packages `0.2.0-rc.2` while the fork's own release is `0.2.1`.
     // A substring test fires on that shared prefix alone and reports a rewrite that never happened.
     // Anchoring keeps what the guard is for — upstream must not have been set to the community
-    // version in any spelling the fork gives it — and still catches `0.2`, `v0.2`, and `0.2-dev`,
-    // which is every value the community series can take.
+    // version in any spelling the fork gives it — and still catches `0.2.1`, `v0.2.1`, and
+    // `0.2.1-dev`, which is every value the community series can take.
     const community = DECLARED.communityVersion.replaceAll('.', '\\.')
     const rewritten = new RegExp(`^v?${community}(?:[-+]|$)`, 'u')
     for (const path of [join(DESKTOP, 'package.json'), join(REPOSITORY, 'package.json')]) {
